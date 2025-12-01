@@ -39,26 +39,33 @@ async function gdFlixExtracter(link) {
                 btnLink = `${baseUrl}${btnLink.startsWith('/') ? '' : '/'}${btnLink}`;
             }
 
+            // --- SPECIAL CASE: PixelDrain Direct Handling ---
+            // Agar link pehle se hi PixelDrain hai (jaise aapne diya)
+            if (btnLink.includes('pixeldrain') || btnLink.includes('pixeld')) {
+                console.log(`✅ ${serverName}: Detected Direct PixelDrain Link`);
+                const id = btnLink.split('/').pop(); // Extract ID "NsBavMY1"
+                const directLink = `https://pixeldrain.com/api/file/${id}?download`;
+                streamLinks.push({ server: serverName, link: directLink, type: 'mkv' });
+                return;
+            }
+
             console.log(`🔍 Processing ${serverName}:`, btnLink);
 
             try {
-                // --- CASE 1: ZFile / Fast Cloud (/zfile/) ---
+                // --- CASE 1: ZFile / Fast Cloud ---
                 if (btnLink.includes('/zfile/')) {
                     console.log(`⏳ Visiting ZFile Page...`);
                     const zRes = await axios.get(btnLink, { headers });
                     const $z = cheerio.load(zRes.data);
 
-                    // Target the Green "CLOUD RESUME DOWNLOAD" Button
                     const finalLink = $z('a:contains("CLOUD RESUME DOWNLOAD")').attr('href') ||
                                       $z('a:contains("Resume Download")').attr('href') ||
-                                      $z('a.btn-success').not('[href="#"]').attr('href'); // Fallback to any green button
+                                      $z('a.btn-success').not('[href="#"]').attr('href');
 
                     if (finalLink && finalLink.startsWith('http')) {
-                        console.log(`✅ ${serverName}: Found Direct Link:`, finalLink);
+                        console.log(`✅ ${serverName}: Found Direct Link`);
                         streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
-                        return; // Done
-                    } else {
-                        console.log(`⚠️ ${serverName}: Button not found on ZFile page.`);
+                        return;
                     }
                 }
 
@@ -88,6 +95,14 @@ async function gdFlixExtracter(link) {
                         const $$ = cheerio.load(intHtml);
                         const dlBtn = $$('a[id="download"], a:contains("Download Here")').attr('href');
                         if (dlBtn && dlBtn.startsWith('http')) finalLink = dlBtn;
+                    }
+
+                    // *** PIXELDRAIN CHECK AFTER RESOLVE ***
+                    // Agar intermediate page PixelDrain par land hua
+                    if (finalLink && (finalLink.includes('pixeldrain') || finalLink.includes('pixeld'))) {
+                        const id = finalLink.split('/').pop();
+                        finalLink = `https://pixeldrain.com/api/file/${id}?download`;
+                        serverName = 'PixelDrain';
                     }
 
                     if (finalLink) {
@@ -132,19 +147,22 @@ async function gdFlixExtracter(link) {
         let r2Link = $('a:contains("Cloud Download")').attr('href') || $('a:contains("[R2]")').attr('href');
         if (r2Link) await processButton(r2Link, 'Cloud R2');
 
-        // 3. Fast Cloud / Zipdisk (The one you asked for)
-        let fastCloudLink = $('a:contains("Fast Cloud")').attr('href') || 
-                            $('a:contains("Zipdisk")').attr('href');
+        // 3. Fast Cloud / Zipdisk
+        let fastCloudLink = $('a:contains("Fast Cloud")').attr('href') || $('a:contains("Zipdisk")').attr('href');
+        if (fastCloudLink) await processButton(fastCloudLink, 'Fast Cloud');
+
+        // 4. PIXELDRAIN DL (New Addition)
+        let pixelLink = $('a:contains("PIXELDRAIN")').attr('href') || 
+                        $('a:contains("Pixeldrain")').attr('href') ||
+                        $('.btn-success:contains("20MB/S")').attr('href'); // Class based on screenshot
         
-        if (fastCloudLink) {
-            await processButton(fastCloudLink, 'Fast Cloud / Zipdisk');
-        }
+        if (pixelLink) await processButton(pixelLink, 'PixelDrain');
+
 
         // --- Resume/Bot Link ---
         const resumeBtn = $('.btn-secondary, .btn-info').attr('href');
         if (resumeBtn && !resumeBtn.includes('javascript')) {
             let botLink = resumeBtn.startsWith('http') ? resumeBtn : `${baseUrl}${resumeBtn}`;
-            // If it's a zfile link, process it properly instead of just pushing
             if (botLink.includes('/zfile/')) {
                  await processButton(botLink, 'Resume Cloud');
             } else {
