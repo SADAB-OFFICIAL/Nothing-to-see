@@ -36,7 +36,7 @@ async function hubcloudExtracter(link) {
         const vcloudRes = await axios.get(vcloudLink, {
             headers: {
                 ...headers,
-                'Referer': link 
+                'Referer': link
             }
         });
         
@@ -44,77 +44,103 @@ async function hubcloudExtracter(link) {
         const pageTitle = $('title').text();
         console.log('📄 Target Page Title:', pageTitle);
 
-        // --- Step 3: Parse Buttons ---
-        const linkClass = $('.btn-success, .btn-danger, .btn-secondary, a.btn');
-        console.log(`🔍 Found ${linkClass.length} potential buttons on page.`);
+        // --- Step 3: Parse Buttons (Improved Selector) ---
+        // Ab hum div wrapper ke andar ke 'a' tags ko bhi target karenge
+        const linkElements = $('.btn-success, .btn-danger, .btn-secondary, a.btn, .download-link');
+        console.log(`🔍 Found ${linkElements.length} potential buttons on page.`);
 
         const promises = [];
 
-        linkClass.each((i, element) => {
+        linkElements.each((i, element) => {
             const itm = $(element);
-            let extractedLink = itm.attr('href') || '';
             const btnText = itm.text().trim();
+            
+            // Priority 1: Href
+            let extractedLink = itm.attr('href');
 
-            if (!extractedLink || extractedLink === '#' || extractedLink.startsWith('javascript')) return;
+            // Priority 2: Onclick (Agar href bekaar hai)
+            if (!extractedLink || extractedLink === '#' || extractedLink.startsWith('javascript')) {
+                const onClick = itm.attr('onclick');
+                if (onClick) {
+                    // Try to find URL in window.open('URL') or location.href='URL'
+                    const match = onClick.match(/(?:window\.open|location\.href)\s*=\s*['"]([^'"]+)['"]/) || 
+                                  onClick.match(/['"]([^'"]+)['"]/); // Fallback: just grab string
+                    if (match) {
+                        extractedLink = match[1];
+                        console.log(`   💡 Extracted link from onclick for "${btnText}"`);
+                    }
+                }
+            }
+
+            // Final Validation
+            if (!extractedLink || extractedLink === '#' || extractedLink.startsWith('javascript')) {
+                console.log(`   ⚠️ Skipped Button "${btnText}": No valid link found.`);
+                return; // Continue to next button
+            }
+
+            // Fix relative URLs
+            if (extractedLink.startsWith('/')) {
+                extractedLink = new URL(extractedLink, vcloudLink).href;
+            }
 
             console.log(`   ➡️ Processing Button: ${btnText} -> ${extractedLink}`);
 
-            // 1. Direct Known Patterns
-            if (extractedLink?.includes('.dev') || extractedLink?.includes('workers.dev')) {
-                streamLinks.push({ server: 'Cf Worker', link: extractedLink, type: 'mkv' });
-                return; // Done
+            // 1. Direct Known Patterns (Fast Path)
+            if (extractedLink.includes('.dev') || extractedLink.includes('workers.dev')) {
+                streamLinks.push({ server: 'CF Worker', link: extractedLink, type: 'mkv' });
+                return;
             }
 
-            if (extractedLink?.includes('pixeld')) {
-                if (!extractedLink?.includes('api')) {
+            if (extractedLink.includes('pixeld')) {
+                if (!extractedLink.includes('api')) {
                     const token = extractedLink.split('/').pop();
                     const pdBase = extractedLink.split('/').slice(0, -2).join('/');
                     extractedLink = `${pdBase}/api/file/${token}?download`;
                 }
                 streamLinks.push({ server: 'Pixeldrain', link: extractedLink, type: 'mkv' });
-                return; // Done
+                return;
             }
 
-            // 2. Resolve Unknown/Redirect Links (Example: boblover.click, hubcloud, etc.)
-            // Agar upar match nahi hua, toh hum isse resolve karenge
+            // 2. Resolve Unknown/Redirect Links (Async Path)
             const p = (async () => {
                 try {
+                    // HEAD Request to follow redirect
                     const newLinkRes = await axios.head(extractedLink, { 
                         headers: { ...headers, 'Referer': vcloudLink },
                         maxRedirects: 5,
-                        validateStatus: (status) => status < 400 // Accept redirects
+                        validateStatus: (status) => status < 400
                     });
                     
                     const finalUrl = newLinkRes.request?.res?.responseUrl || extractedLink;
-                    console.log(`      ↳ Resolved: ${finalUrl}`);
+                    // console.log(`      ↳ Resolved: ${finalUrl}`);
 
-                    // Agar final URL nested hubcloud link hai (query param mein)
-                    const nestedLink = finalUrl.split('link=')?.[1] || finalUrl;
+                    // Check resolved URL for known patterns
+                    let nestedLink = finalUrl.split('link=')?.[1] || finalUrl;
+                    // Sometimes decodeURIComponent is needed if nested
+                    try { nestedLink = decodeURIComponent(nestedLink); } catch(e){}
 
-                    // Final Check on Resolved Link
-                    if (nestedLink.includes('.dev') || nestedLink.includes('workers')) {
-                        streamLinks.push({ server: 'CF Worker (Resolved)', link: nestedLink, type: 'mkv' });
-                    } else if (nestedLink.includes('pixeld')) {
-                         // Pixeldrain logic again for resolved link
-                         let pdLink = nestedLink;
-                         if (!pdLink.includes('api')) {
-                            const token = pdLink.split('/').pop();
-                            const pdBase = pdLink.split('/').slice(0, -2).join('/');
-                            pdLink = `${pdBase}/api/file/${token}?download`;
-                         }
-                         streamLinks.push({ server: 'Pixeldrain', link: pdLink, type: 'mkv' });
-                    } else {
-                        // Fallback: Add whatever we found as a stream
-                        streamLinks.push({ 
-                            server: btnText || 'Cloud Server', 
-                            link: nestedLink, 
-                            type: 'mkv' 
-                        });
+                    // Determine Server Name
+                    let serverName = btnText || 'Cloud Server';
+                    if (nestedLink.includes('pixeld')) serverName = 'Pixeldrain';
+                    else if (nestedLink.includes('drive.google')) serverName = 'G-Drive';
+                    else if (nestedLink.includes('worker')) serverName = 'CF Worker';
+
+                    // Special Logic for Pixeldrain after resolution
+                    if (nestedLink.includes('pixeld') && !nestedLink.includes('api')) {
+                         const token = nestedLink.split('/').pop();
+                         nestedLink = `https://pixeldrain.com/api/file/${token}?download`;
                     }
 
+                    // Push to streams
+                    streamLinks.push({ 
+                        server: serverName, 
+                        link: nestedLink, 
+                        type: 'mkv' 
+                    });
+
                 } catch (error) {
-                    console.log(`⚠️ Error resolving link ${extractedLink}:`, error.message);
-                    // Agar resolve fail ho jaye, toh original link hi daal do, shayad browser handle kar le
+                    console.log(`⚠️ Failed to resolve link ${extractedLink}:`, error.message);
+                    // Agar resolve fail hua, tab bhi original link daal do (kabhi kabhi direct chalta hai)
                     streamLinks.push({ 
                         server: btnText || 'Download', 
                         link: extractedLink, 
@@ -126,8 +152,12 @@ async function hubcloudExtracter(link) {
         });
 
         await Promise.all(promises);
+        
+        // Remove duplicates based on link
+        const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
+            .map(link => streamLinks.find(a => a.link === link));
 
-        return streamLinks;
+        return uniqueStreams;
 
     } catch (error) {
         console.error('❌ Extractor Error:', error.message);
