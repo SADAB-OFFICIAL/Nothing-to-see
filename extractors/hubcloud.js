@@ -11,14 +11,13 @@ async function hubcloudExtracter(link) {
     try {
         console.log('🚀 HubCloud Logic Started for:', link);
         const baseUrl = link.split('/').slice(0, 3).join('/');
-        const streamLinks = [];
+        let streamLinks = [];
 
         // --- Step 1: Get Landing Page ---
         const vLinkRes = await axios.get(link, { headers });
         const vLinkText = vLinkRes.data;
         const $vLink = cheerio.load(vLinkText);
 
-        // Extract Redirect URL
         const vLinkRedirect = vLinkText.match(/var\s+url\s*=\s*'([^']+)';/) || [];
         let vcloudLink =
             decode(vLinkRedirect[1]?.split('r=')?.[1]) ||
@@ -40,122 +39,114 @@ async function hubcloudExtracter(link) {
             }
         });
         
-        const $ = cheerio.load(vcloudRes.data);
-        const pageTitle = $('title').text();
-        console.log('📄 Target Page Title:', pageTitle);
+        const html = vcloudRes.data;
+        const $ = cheerio.load(html);
+        console.log('📄 Page Fetched. Scanning for links...');
 
-        // --- Step 3: Parse Buttons (Improved Selector) ---
-        // Ab hum div wrapper ke andar ke 'a' tags ko bhi target karenge
-        const linkElements = $('.btn-success, .btn-danger, .btn-secondary, a.btn, .download-link');
-        console.log(`🔍 Found ${linkElements.length} potential buttons on page.`);
+        // Set to store unique links found
+        const foundLinks = new Set();
 
-        const promises = [];
-
-        linkElements.each((i, element) => {
-            const itm = $(element);
-            const btnText = itm.text().trim();
-            
-            // Priority 1: Href
-            let extractedLink = itm.attr('href');
-
-            // Priority 2: Onclick (Agar href bekaar hai)
-            if (!extractedLink || extractedLink === '#' || extractedLink.startsWith('javascript')) {
-                const onClick = itm.attr('onclick');
-                if (onClick) {
-                    // Try to find URL in window.open('URL') or location.href='URL'
-                    const match = onClick.match(/(?:window\.open|location\.href)\s*=\s*['"]([^'"]+)['"]/) || 
-                                  onClick.match(/['"]([^'"]+)['"]/); // Fallback: just grab string
-                    if (match) {
-                        extractedLink = match[1];
-                        console.log(`   💡 Extracted link from onclick for "${btnText}"`);
-                    }
-                }
+        // --- METHOD A: Button Parsing (Standard) ---
+        $('.btn-success, .btn-danger, .btn-secondary, a.btn, .download-link').each((i, element) => {
+            const href = $(element).attr('href');
+            if (href && href.startsWith('http')) {
+                foundLinks.add(href);
             }
+        });
 
-            // Final Validation
-            if (!extractedLink || extractedLink === '#' || extractedLink.startsWith('javascript')) {
-                console.log(`   ⚠️ Skipped Button "${btnText}": No valid link found.`);
-                return; // Continue to next button
+        // --- METHOD B: Script Regex (For TRS/Android buttons) ---
+        // Ye script tags ke andar URLs dhoondhega (e.g. window.location='...')
+        // Regex looks for http/https links containing specific keywords
+        const regexPattern = /https?:\/\/[^"'\s<>]+(?:token=|id=|file\/|\.dev|drive|pixeldrain|boblover|hubcloud)/gi;
+        const scriptMatches = html.match(regexPattern) || [];
+        
+        scriptMatches.forEach(match => {
+            // Filter junk matches
+            if (!match.includes('google.com') && !match.includes('facebook.com') && !match.includes('w3.org')) {
+                // Remove trailing quotes or semicolons if regex caught them
+                const cleanLink = match.replace(/['";\)]+$/, '');
+                foundLinks.add(cleanLink);
             }
+        });
 
-            // Fix relative URLs
-            if (extractedLink.startsWith('/')) {
-                extractedLink = new URL(extractedLink, vcloudLink).href;
-            }
+        console.log(`🔍 Total unique potential links found: ${foundLinks.size}`);
 
-            console.log(`   ➡️ Processing Button: ${btnText} -> ${extractedLink}`);
+        // --- Step 3: Process & Resolve All Found Links ---
+        const processingPromises = Array.from(foundLinks).map(async (rawLink) => {
+            try {
+                // Skip if obviously not a video link
+                if (rawLink.includes('.css') || rawLink.includes('.js') || rawLink.includes('wp-content')) return;
 
-            // 1. Direct Known Patterns (Fast Path)
-            if (extractedLink.includes('.dev') || extractedLink.includes('workers.dev')) {
-                streamLinks.push({ server: 'CF Worker', link: extractedLink, type: 'mkv' });
-                return;
-            }
+                // Determine Server Name (Guessing)
+                let serverName = 'Cloud Server';
+                if (rawLink.includes('boblover')) serverName = 'FSL/TRS Server';
+                if (rawLink.includes('pixeld')) serverName = 'Pixeldrain';
+                if (rawLink.includes('worker')) serverName = 'CF Worker';
 
-            if (extractedLink.includes('pixeld')) {
-                if (!extractedLink.includes('api')) {
-                    const token = extractedLink.split('/').pop();
-                    const pdBase = extractedLink.split('/').slice(0, -2).join('/');
-                    extractedLink = `${pdBase}/api/file/${token}?download`;
-                }
-                streamLinks.push({ server: 'Pixeldrain', link: extractedLink, type: 'mkv' });
-                return;
-            }
-
-            // 2. Resolve Unknown/Redirect Links (Async Path)
-            const p = (async () => {
-                try {
-                    // HEAD Request to follow redirect
-                    const newLinkRes = await axios.head(extractedLink, { 
+                // --- Resolution Logic ---
+                // Agar link boblover/hubcloud hai, toh usse resolve karo
+                if (rawLink.includes('boblover') || rawLink.includes('hubcloud') || rawLink.includes('/?id=')) {
+                    
+                    const newLinkRes = await axios.head(rawLink, { 
                         headers: { ...headers, 'Referer': vcloudLink },
                         maxRedirects: 5,
                         validateStatus: (status) => status < 400
                     });
                     
-                    const finalUrl = newLinkRes.request?.res?.responseUrl || extractedLink;
-                    // console.log(`      ↳ Resolved: ${finalUrl}`);
-
-                    // Check resolved URL for known patterns
+                    const finalUrl = newLinkRes.request?.res?.responseUrl || rawLink;
                     let nestedLink = finalUrl.split('link=')?.[1] || finalUrl;
-                    // Sometimes decodeURIComponent is needed if nested
                     try { nestedLink = decodeURIComponent(nestedLink); } catch(e){}
 
-                    // Determine Server Name
-                    let serverName = btnText || 'Cloud Server';
+                    // Rename server based on resolved link
                     if (nestedLink.includes('pixeld')) serverName = 'Pixeldrain';
-                    else if (nestedLink.includes('drive.google')) serverName = 'G-Drive';
-                    else if (nestedLink.includes('worker')) serverName = 'CF Worker';
+                    else if (nestedLink.includes('workers')) serverName = 'CF Worker';
 
-                    // Special Logic for Pixeldrain after resolution
+                    // Pixeldrain API conversion
                     if (nestedLink.includes('pixeld') && !nestedLink.includes('api')) {
-                         const token = nestedLink.split('/').pop();
-                         nestedLink = `https://pixeldrain.com/api/file/${token}?download`;
+                        const token = nestedLink.split('/').pop();
+                        nestedLink = `https://pixeldrain.com/api/file/${token}?download`;
                     }
 
-                    // Push to streams
-                    streamLinks.push({ 
-                        server: serverName, 
-                        link: nestedLink, 
-                        type: 'mkv' 
-                    });
+                    streamLinks.push({ server: serverName, link: nestedLink, type: 'mkv' });
 
-                } catch (error) {
-                    console.log(`⚠️ Failed to resolve link ${extractedLink}:`, error.message);
-                    // Agar resolve fail hua, tab bhi original link daal do (kabhi kabhi direct chalta hai)
-                    streamLinks.push({ 
-                        server: btnText || 'Download', 
-                        link: extractedLink, 
-                        type: 'mkv' 
-                    });
+                } else {
+                    // Direct links (PixelDrain direct, Workers, etc.)
+                    if (rawLink.includes('pixeld')) {
+                         if (!rawLink.includes('api')) {
+                            const token = rawLink.split('/').pop();
+                            const pdBase = rawLink.split('/').slice(0, -2).join('/');
+                            rawLink = `${pdBase}/api/file/${token}?download`;
+                        }
+                        serverName = 'Pixeldrain';
+                    }
+                    
+                    streamLinks.push({ server: serverName, link: rawLink, type: 'mkv' });
                 }
-            })();
-            promises.push(p);
+
+            } catch (error) {
+                console.log(`⚠️ Failed to process ${rawLink}:`, error.message);
+            }
         });
 
-        await Promise.all(promises);
-        
-        // Remove duplicates based on link
-        const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
-            .map(link => streamLinks.find(a => a.link === link));
+        await Promise.all(processingPromises);
+
+        // --- Step 4: Final Cleanup ---
+        // Duplicates hatao aur invalid links filter karo
+        const uniqueStreams = [];
+        const seenUrls = new Set();
+
+        streamLinks.forEach(item => {
+            if (
+                item.link && 
+                item.link.startsWith('http') && 
+                !seenUrls.has(item.link) &&
+                !item.link.includes('facebook') && // Safety check
+                !item.link.includes('twitter')
+            ) {
+                seenUrls.add(item.link);
+                uniqueStreams.push(item);
+            }
+        });
 
         return uniqueStreams;
 
