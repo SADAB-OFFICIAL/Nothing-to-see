@@ -32,7 +32,7 @@ async function gdFlixExtracter(link) {
 
         // --- Helper Function to Process Intermediate Links ---
         const processButton = async (btnLink, serverName) => {
-            if (!btnLink) return;
+            if (!btnLink || btnLink === '#') return;
             
             // Fix Relative URLs
             if (!btnLink.startsWith('http')) {
@@ -40,12 +40,13 @@ async function gdFlixExtracter(link) {
             }
 
             // --- SPECIAL CASE: PixelDrain Direct Handling ---
-            // Agar link pehle se hi PixelDrain hai (jaise aapne diya)
+            // Agar button ka link seedha pixeldrain hai
             if (btnLink.includes('pixeldrain') || btnLink.includes('pixeld')) {
                 console.log(`✅ ${serverName}: Detected Direct PixelDrain Link`);
-                const id = btnLink.split('/').pop(); // Extract ID "NsBavMY1"
+                const id = btnLink.split('/').pop(); 
+                // Convert .dev/.com/u/ to api download link
                 const directLink = `https://pixeldrain.com/api/file/${id}?download`;
-                streamLinks.push({ server: serverName, link: directLink, type: 'mkv' });
+                streamLinks.push({ server: 'PixelDrain', link: directLink, type: 'mkv' });
                 return;
             }
 
@@ -98,7 +99,6 @@ async function gdFlixExtracter(link) {
                     }
 
                     // *** PIXELDRAIN CHECK AFTER RESOLVE ***
-                    // Agar intermediate page PixelDrain par land hua
                     if (finalLink && (finalLink.includes('pixeldrain') || finalLink.includes('pixeld'))) {
                         const id = finalLink.split('/').pop();
                         finalLink = `https://pixeldrain.com/api/file/${id}?download`;
@@ -110,7 +110,7 @@ async function gdFlixExtracter(link) {
                     }
                 } 
                 
-                // --- CASE 3: Standard API Token Logic ---
+                // --- CASE 3: API Token Logic ---
                 else if (btnLink.includes('url=') || btnLink.includes('id=')) {
                     try {
                         const token = btnLink.split(/url=|id=/)[1]; 
@@ -126,8 +126,7 @@ async function gdFlixExtracter(link) {
                         }
                     } catch(err) {}
                 }
-                
-                // --- CASE 4: Direct Link Fallback ---
+                // --- CASE 4: Fallback Direct ---
                 else {
                     streamLinks.push({ server: serverName, link: btnLink, type: 'mkv' });
                 }
@@ -137,48 +136,54 @@ async function gdFlixExtracter(link) {
             }
         };
 
-        // --- TARGETING BUTTONS ---
+        // --- NEW STRATEGY: SCAN ALL BUTTONS ---
+        // Instead of selecting specific classes, scan all 'a' tags with button classes
+        const buttons = $('a.btn, a.button, a[class*="btn-"]');
         
-        // 1. Instant DL
-        const instantLink = $('.btn-danger').attr('href');
-        if (instantLink) await processButton(instantLink, 'G-Drive Instant');
+        // Use a Set to avoid processing the same link multiple times
+        const processedLinks = new Set();
+        const promises = [];
 
-        // 2. Cloud Download [R2]
-        let r2Link = $('a:contains("Cloud Download")').attr('href') || $('a:contains("[R2]")').attr('href');
-        if (r2Link) await processButton(r2Link, 'Cloud R2');
+        buttons.each((i, el) => {
+            const btn = $(el);
+            const href = btn.attr('href');
+            const text = btn.text().toUpperCase(); // Case insensitive match
 
-        // 3. Fast Cloud / Zipdisk
-        let fastCloudLink = $('a:contains("Fast Cloud")').attr('href') || $('a:contains("Zipdisk")').attr('href');
-        if (fastCloudLink) await processButton(fastCloudLink, 'Fast Cloud');
+            if (!href || href === '#' || href.startsWith('javascript') || processedLinks.has(href)) return;
 
-        // 4. PIXELDRAIN DL (New Addition)
-        let pixelLink = $('a:contains("PIXELDRAIN")').attr('href') || 
-                        $('a:contains("Pixeldrain")').attr('href') ||
-                        $('.btn-success:contains("20MB/S")').attr('href'); // Class based on screenshot
-        
-        if (pixelLink) await processButton(pixelLink, 'PixelDrain');
+            processedLinks.add(href);
 
+            // Determine what this button is
+            let type = null;
 
-        // --- Resume/Bot Link ---
-        const resumeBtn = $('.btn-secondary, .btn-info').attr('href');
-        if (resumeBtn && !resumeBtn.includes('javascript')) {
-            let botLink = resumeBtn.startsWith('http') ? resumeBtn : `${baseUrl}${resumeBtn}`;
-            if (botLink.includes('/zfile/')) {
-                 await processButton(botLink, 'Resume Cloud');
-            } else {
-                 streamLinks.push({ server: 'Resume/Index Cloud', link: botLink, type: 'mkv' });
-            }
-        }
-
-        // --- Worker Link ---
-        $('a').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href && (href.includes('workers.dev') || href.includes('cf-worker'))) {
-                streamLinks.push({ server: 'CF Worker', link: href, type: 'mkv' });
+            if (text.includes('INSTANT')) type = 'G-Drive Instant';
+            else if (text.includes('CLOUD') && text.includes('RESUME')) type = 'Resume Cloud'; // Explicit Resume
+            else if (text.includes('CLOUD') && text.includes('R2')) type = 'Cloud R2';
+            else if (text.includes('FAST CLOUD') || text.includes('ZIPDISK')) type = 'Fast Cloud';
+            else if (text.includes('PIXELDRAIN')) type = 'PixelDrain';
+            else if (href.includes('pixeldrain') || href.includes('pixeld')) type = 'PixelDrain'; // Check HREF too
+            else if (text.includes('RESUME') || text.includes('BOT')) type = 'Resume/Index Cloud';
+            
+            // If recognized, process it
+            if (type) {
+                promises.push(processButton(href, type));
             }
         });
 
-        // Deduplicate
+        await Promise.all(promises);
+
+        // --- Worker Link Check (Fallback) ---
+        $('a').each((i, el) => {
+            const href = $(el).attr('href');
+            if (href && (href.includes('workers.dev') || href.includes('cf-worker'))) {
+                // Only add if not already in streamLinks
+                if (!streamLinks.some(s => s.link === href)) {
+                    streamLinks.push({ server: 'CF Worker', link: href, type: 'mkv' });
+                }
+            }
+        });
+
+        // Final Deduplication
         const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
             .map(link => streamLinks.find(a => a.link === link));
 
