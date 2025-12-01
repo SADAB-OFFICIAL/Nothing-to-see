@@ -41,12 +41,11 @@ async function hubcloudExtracter(link) {
         
         const html = vcloudRes.data;
         const $ = cheerio.load(html);
-        console.log('📄 Page Fetched. Scanning for links...');
+        console.log('📄 Page Fetched. Scanning for valid links...');
 
-        // Set to store unique links found
         const foundLinks = new Set();
 
-        // --- METHOD A: Button Parsing (Standard) ---
+        // --- METHOD A: Button Parsing ---
         $('.btn-success, .btn-danger, .btn-secondary, a.btn, .download-link').each((i, element) => {
             const href = $(element).attr('href');
             if (href && href.startsWith('http')) {
@@ -54,37 +53,45 @@ async function hubcloudExtracter(link) {
             }
         });
 
-        // --- METHOD B: Script Regex (For TRS/Android buttons) ---
-        // Ye script tags ke andar URLs dhoondhega (e.g. window.location='...')
-        // Regex looks for http/https links containing specific keywords
+        // --- METHOD B: Script Regex ---
+        // Regex ko thoda strict kiya hai taaki social media na pakde
         const regexPattern = /https?:\/\/[^"'\s<>]+(?:token=|id=|file\/|\.dev|drive|pixeldrain|boblover|hubcloud)/gi;
         const scriptMatches = html.match(regexPattern) || [];
         
+        // --- STRICT FILTER LIST ---
+        const JUNK_DOMAINS = [
+            't.me', 'telegram', 'facebook', 'instagram', 'twitter', 'whatsapp', 'discord', 
+            'wp-content', 'wp-includes', 'pixel.wp.com', 'google.com/search'
+        ];
+
         scriptMatches.forEach(match => {
-            // Filter junk matches
-            if (!match.includes('google.com') && !match.includes('facebook.com') && !match.includes('w3.org')) {
-                // Remove trailing quotes or semicolons if regex caught them
-                const cleanLink = match.replace(/['";\)]+$/, '');
+            let cleanLink = match.replace(/['";\)]+$/, '');
+            
+            // 🛑 Garbage Filter
+            const isJunk = JUNK_DOMAINS.some(d => cleanLink.includes(d));
+            const isBaseUrl = cleanLink === baseUrl || cleanLink === link || cleanLink === vcloudLink;
+            
+            // Sirf tab add karo jab wo junk na ho
+            if (!isJunk && !isBaseUrl) {
                 foundLinks.add(cleanLink);
             }
         });
 
         console.log(`🔍 Total unique potential links found: ${foundLinks.size}`);
 
-        // --- Step 3: Process & Resolve All Found Links ---
+        // --- Step 3: Process & Resolve ---
         const processingPromises = Array.from(foundLinks).map(async (rawLink) => {
             try {
-                // Skip if obviously not a video link
-                if (rawLink.includes('.css') || rawLink.includes('.js') || rawLink.includes('wp-content')) return;
+                // Secondary Filter Check
+                if (JUNK_DOMAINS.some(d => rawLink.includes(d))) return;
 
-                // Determine Server Name (Guessing)
+                // Determine Server Name
                 let serverName = 'Cloud Server';
                 if (rawLink.includes('boblover')) serverName = 'FSL/TRS Server';
-                if (rawLink.includes('pixeld')) serverName = 'Pixeldrain';
-                if (rawLink.includes('worker')) serverName = 'CF Worker';
+                else if (rawLink.includes('pixeld')) serverName = 'Pixeldrain';
+                else if (rawLink.includes('worker')) serverName = 'CF Worker';
 
                 // --- Resolution Logic ---
-                // Agar link boblover/hubcloud hai, toh usse resolve karo
                 if (rawLink.includes('boblover') || rawLink.includes('hubcloud') || rawLink.includes('/?id=')) {
                     
                     const newLinkRes = await axios.head(rawLink, { 
@@ -97,11 +104,16 @@ async function hubcloudExtracter(link) {
                     let nestedLink = finalUrl.split('link=')?.[1] || finalUrl;
                     try { nestedLink = decodeURIComponent(nestedLink); } catch(e){}
 
-                    // Rename server based on resolved link
+                    // 🛑 Agar resolve hoke wapas wahi page aa gaya ya Telegram ban gaya, toh discard karo
+                    if (nestedLink.includes('t.me') || nestedLink === vcloudLink) {
+                        return;
+                    }
+
+                    // Rename server if resolved to something known
                     if (nestedLink.includes('pixeld')) serverName = 'Pixeldrain';
                     else if (nestedLink.includes('workers')) serverName = 'CF Worker';
 
-                    // Pixeldrain API conversion
+                    // Pixeldrain Fix
                     if (nestedLink.includes('pixeld') && !nestedLink.includes('api')) {
                         const token = nestedLink.split('/').pop();
                         nestedLink = `https://pixeldrain.com/api/file/${token}?download`;
@@ -110,7 +122,7 @@ async function hubcloudExtracter(link) {
                     streamLinks.push({ server: serverName, link: nestedLink, type: 'mkv' });
 
                 } else {
-                    // Direct links (PixelDrain direct, Workers, etc.)
+                    // Direct links handling
                     if (rawLink.includes('pixeld')) {
                          if (!rawLink.includes('api')) {
                             const token = rawLink.split('/').pop();
@@ -120,28 +132,29 @@ async function hubcloudExtracter(link) {
                         serverName = 'Pixeldrain';
                     }
                     
+                    // Push direct link
                     streamLinks.push({ server: serverName, link: rawLink, type: 'mkv' });
                 }
 
             } catch (error) {
-                console.log(`⚠️ Failed to process ${rawLink}:`, error.message);
+                // console.log(`⚠️ Link failed: ${rawLink}`);
             }
         });
 
         await Promise.all(processingPromises);
 
-        // --- Step 4: Final Cleanup ---
-        // Duplicates hatao aur invalid links filter karo
+        // --- Step 4: Final Cleanup (Duplicate Removal) ---
         const uniqueStreams = [];
         const seenUrls = new Set();
 
         streamLinks.forEach(item => {
+            // Final check: Link must NOT be empty, NOT be Telegram, NOT be the Base URL
             if (
                 item.link && 
                 item.link.startsWith('http') && 
                 !seenUrls.has(item.link) &&
-                !item.link.includes('facebook') && // Safety check
-                !item.link.includes('twitter')
+                !item.link.includes('t.me') &&
+                !item.link.includes('hubcloud.foo/drive') // Specific filter for your issue
             ) {
                 seenUrls.add(item.link);
                 uniqueStreams.push(item);
