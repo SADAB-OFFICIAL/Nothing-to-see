@@ -1,4 +1,3 @@
-// extractors/hubcloud.js
 const axios = require('axios');
 const cheerio = require('cheerio');
 const headers = require('../headers');
@@ -33,25 +32,20 @@ async function hubcloudExtracter(link) {
 
         console.log('🔄 Target V-Cloud Link found:', vcloudLink);
 
-        // --- Step 2: Fetch Target Page (CRITICAL UPDATE) ---
-        // Yahan hum Headers ke saath 'Referer' bhej rahe hain, jo ki bahut zaroori hai
+        // --- Step 2: Fetch Target Page ---
         const vcloudRes = await axios.get(vcloudLink, {
             headers: {
                 ...headers,
-                'Referer': link // Ye batata hai ki hum pichle page se aaye hain
+                'Referer': link 
             }
         });
         
         const $ = cheerio.load(vcloudRes.data);
-        
-        // Debugging: Check karo agar title mein "Just a moment" (Cloudflare) hai
         const pageTitle = $('title').text();
         console.log('📄 Target Page Title:', pageTitle);
 
         // --- Step 3: Parse Buttons ---
-        // Selector ko thoda loose rakha hai taaki variations pakad sake
         const linkClass = $('.btn-success, .btn-danger, .btn-secondary, a.btn');
-        
         console.log(`🔍 Found ${linkClass.length} potential buttons on page.`);
 
         const promises = [];
@@ -61,17 +55,16 @@ async function hubcloudExtracter(link) {
             let extractedLink = itm.attr('href') || '';
             const btnText = itm.text().trim();
 
-            // Skip invalid links
             if (!extractedLink || extractedLink === '#' || extractedLink.startsWith('javascript')) return;
 
             console.log(`   ➡️ Processing Button: ${btnText} -> ${extractedLink}`);
 
-            // Logic A: CF Worker / Direct / HubCloud Names
+            // 1. Direct Known Patterns
             if (extractedLink?.includes('.dev') || extractedLink?.includes('workers.dev')) {
                 streamLinks.push({ server: 'Cf Worker', link: extractedLink, type: 'mkv' });
+                return; // Done
             }
 
-            // Logic B: PixelDrain
             if (extractedLink?.includes('pixeld')) {
                 if (!extractedLink?.includes('api')) {
                     const token = extractedLink.split('/').pop();
@@ -79,50 +72,60 @@ async function hubcloudExtracter(link) {
                     extractedLink = `${pdBase}/api/file/${token}?download`;
                 }
                 streamLinks.push({ server: 'Pixeldrain', link: extractedLink, type: 'mkv' });
+                return; // Done
             }
 
-            // Logic C: Nested HubCloud Links / Recursive
-            if (extractedLink?.includes('hubcloud') || extractedLink?.includes('/?id=')) {
-                const p = (async () => {
-                    try {
-                        const newLinkRes = await axios.head(extractedLink, { 
-                            headers: { ...headers, 'Referer': vcloudLink }, // Referer chain maintain karo
-                            maxRedirects: 5 
+            // 2. Resolve Unknown/Redirect Links (Example: boblover.click, hubcloud, etc.)
+            // Agar upar match nahi hua, toh hum isse resolve karenge
+            const p = (async () => {
+                try {
+                    const newLinkRes = await axios.head(extractedLink, { 
+                        headers: { ...headers, 'Referer': vcloudLink },
+                        maxRedirects: 5,
+                        validateStatus: (status) => status < 400 // Accept redirects
+                    });
+                    
+                    const finalUrl = newLinkRes.request?.res?.responseUrl || extractedLink;
+                    console.log(`      ↳ Resolved: ${finalUrl}`);
+
+                    // Agar final URL nested hubcloud link hai (query param mein)
+                    const nestedLink = finalUrl.split('link=')?.[1] || finalUrl;
+
+                    // Final Check on Resolved Link
+                    if (nestedLink.includes('.dev') || nestedLink.includes('workers')) {
+                        streamLinks.push({ server: 'CF Worker (Resolved)', link: nestedLink, type: 'mkv' });
+                    } else if (nestedLink.includes('pixeld')) {
+                         // Pixeldrain logic again for resolved link
+                         let pdLink = nestedLink;
+                         if (!pdLink.includes('api')) {
+                            const token = pdLink.split('/').pop();
+                            const pdBase = pdLink.split('/').slice(0, -2).join('/');
+                            pdLink = `${pdBase}/api/file/${token}?download`;
+                         }
+                         streamLinks.push({ server: 'Pixeldrain', link: pdLink, type: 'mkv' });
+                    } else {
+                        // Fallback: Add whatever we found as a stream
+                        streamLinks.push({ 
+                            server: btnText || 'Cloud Server', 
+                            link: nestedLink, 
+                            type: 'mkv' 
                         });
-                        const finalUrl = newLinkRes.request?.res?.responseUrl || extractedLink;
-                        
-                        // Kabhi kabhi link query param me hota hai 'link=...'
-                        const nestedLink = finalUrl.split('link=')?.[1] || finalUrl;
-                        
-                        // Avoid duplicates or loops
-                        if(nestedLink !== vcloudLink) {
-                             streamLinks.push({ server: 'HubCloud VIP', link: nestedLink, type: 'mkv' });
-                        }
-                    } catch (error) {
-                        console.log('⚠️ Error resolving nested hubcloud link:', error.message);
                     }
-                })();
-                promises.push(p);
-            }
 
-            // Logic D: Other Sources
-            if (extractedLink?.includes('cloudflarestorage')) {
-                streamLinks.push({ server: 'CfStorage', link: extractedLink, type: 'mkv' });
-            }
-            if (extractedLink?.includes('fastdl')) {
-                streamLinks.push({ server: 'FastDl', link: extractedLink, type: 'mkv' });
-            }
-            if (extractedLink.includes('hubcdn')) {
-                streamLinks.push({ server: 'HubCdn', link: extractedLink, type: 'mkv' });
-            }
+                } catch (error) {
+                    console.log(`⚠️ Error resolving link ${extractedLink}:`, error.message);
+                    // Agar resolve fail ho jaye, toh original link hi daal do, shayad browser handle kar le
+                    streamLinks.push({ 
+                        server: btnText || 'Download', 
+                        link: extractedLink, 
+                        type: 'mkv' 
+                    });
+                }
+            })();
+            promises.push(p);
         });
 
         await Promise.all(promises);
-
-        if (streamLinks.length === 0) {
-            console.log('⚠️ No streams found. HTML Content Dump (first 500 chars):');
-            console.log(vcloudRes.data.substring(0, 500));
-        }
 
         return streamLinks;
 
