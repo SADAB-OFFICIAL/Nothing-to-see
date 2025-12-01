@@ -13,6 +13,7 @@ async function gdFlixExtracter(link) {
         let $ = cheerio.load(data);
         let currentUrl = res.request.res.responseUrl || link;
 
+        // Handle JS Redirection (location.replace)
         if (data.includes('location.replace')) {
             const redirectMatch = data.match(/location\.replace\(['"]([^'"]+)['"]\)/);
             if (redirectMatch && redirectMatch[1]) {
@@ -29,63 +30,77 @@ async function gdFlixExtracter(link) {
         const urlObj = new URL(currentUrl);
         const baseUrl = urlObj.origin;
 
-        // --- STRATEGY 1: Instant Link (Processing busycdn / fastcdn) ---
+        // --- STRATEGY 1: Instant Link (Handling BusyCDN / FastCDN) ---
         const instantBtn = $('.btn-danger').attr('href');
         
         if (instantBtn) {
             console.log('⚡ Instant Button Found:', instantBtn);
             
-            // Check if it's the "BusyCDN" / "FastCDN" style link
+            // Check for BusyCDN / FastCDN / Pages.dev pattern
             if (instantBtn.includes('busycdn') || instantBtn.includes('fastcdn') || instantBtn.includes('pages.dev')) {
                 try {
                     console.log('⏳ Visiting Intermediate Page:', instantBtn);
                     
-                    // Fetch the intermediate page (The one in your screenshot)
-                    const intRes = await axios.get(instantBtn, { headers });
-                    const intHtml = intRes.data;
-                    const $$ = cheerio.load(intHtml);
-
-                    // 1. Try finding 'url=' inside the script tag or meta refresh
-                    // Screenshot page URL structure is usually: ...?url=https://final-link...
-                    const urlParamMatch = instantBtn.match(/[?&]url=([^&]+)/);
+                    const intRes = await axios.get(instantBtn, { 
+                        headers,
+                        maxRedirects: 5 // Ensure we follow redirects to reach fastcdn-dl.pages.dev
+                    });
                     
-                    if (urlParamMatch) {
-                        const finalLink = decodeURIComponent(urlParamMatch[1]);
-                        console.log('✅ Found Direct Link from URL Param:', finalLink);
-                        streamLinks.push({ server: 'G-Drive Direct', link: finalLink, type: 'mkv' });
-                    } 
-                    // 2. Try parsing the "Download Here" button from HTML
-                    else {
-                        const downloadHref = $$('a[id="download"], a.btn-primary, a:contains("Download Here")').attr('href');
-                        
-                        if (downloadHref && downloadHref !== '#') {
-                            console.log('✅ Found Direct Link from Button:', downloadHref);
-                            streamLinks.push({ server: 'G-Drive Direct', link: downloadHref, type: 'mkv' });
-                        } 
-                        // 3. Script Variable Extraction (Most likely scenario for 'One Click')
-                        else {
-                            const scriptUrl = intHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
-                                              intHtml.match(/window\.open\(["']([^"']+)["']\)/i) ||
-                                              intHtml.match(/let\s+url\s*=\s*["']([^"']+)["']/i);
-                            
-                            if (scriptUrl && scriptUrl[1]) {
-                                console.log('✅ Found Direct Link from Script:', scriptUrl[1]);
-                                streamLinks.push({ server: 'G-Drive Direct', link: scriptUrl[1], type: 'mkv' });
-                            } else {
-                                console.log('⚠️ Could not extract final link from intermediate page. pushing original.');
-                                streamLinks.push({ server: 'Instant Link (Verify)', link: instantBtn, type: 'mkv' });
-                            }
+                    const intHtml = intRes.data;
+                    const finalPageUrl = intRes.request.res.responseUrl || instantBtn;
+                    
+                    console.log('📍 Final Landing URL:', finalPageUrl);
+
+                    let finalLink = null;
+
+                    // Method A: Check URL Parameters (Screenshot shows ?url=...)
+                    // Yeh sabse strong check hai based on your screenshot
+                    if (finalPageUrl.includes('?url=')) {
+                        const extracted = finalPageUrl.split('?url=')[1].split('&')[0];
+                        if (extracted) {
+                            finalLink = decodeURIComponent(extracted);
+                            console.log('✅ Found Direct Link in URL Param:', finalLink);
                         }
+                    }
+
+                    // Method B: Script Variable (window.location / var url)
+                    // Agar URL param mein nahi mila, toh script mein dhoondo
+                    if (!finalLink) {
+                        const scriptMatch = intHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
+                                            intHtml.match(/window\.open\(["']([^"']+)["']\)/i) ||
+                                            intHtml.match(/url\s*=\s*["']([^"']+)["']/i) ||
+                                            intHtml.match(/domain\s*=\s*["']([^"']+)["']/i);
+                        
+                        if (scriptMatch && scriptMatch[1]) {
+                            finalLink = scriptMatch[1];
+                            console.log('✅ Found Direct Link in Script:', finalLink);
+                        }
+                    }
+
+                    // Method C: Button with ID 'download'
+                    if (!finalLink) {
+                        const $$ = cheerio.load(intHtml);
+                        const btnLink = $$('#download').attr('href') || $$('a.btn').attr('href');
+                        if (btnLink && btnLink !== '#' && btnLink.startsWith('http')) {
+                            finalLink = btnLink;
+                            console.log('✅ Found Direct Link in Button:', finalLink);
+                        }
+                    }
+
+                    if (finalLink) {
+                        streamLinks.push({ server: 'G-Drive Direct', link: finalLink, type: 'mkv' });
+                    } else {
+                        console.log('⚠️ Failed to extract from Intermediate Page. Dumping URL for manual check:', finalPageUrl);
+                        // Fallback: Return original link just in case
+                        streamLinks.push({ server: 'Instant Link (Manual)', link: instantBtn, type: 'mkv' });
                     }
 
                 } catch (e) {
                     console.log('❌ Error visiting intermediate page:', e.message);
-                    streamLinks.push({ server: 'Instant Link', link: instantBtn, type: 'mkv' });
                 }
             } 
-            // Case B: Old API Token Logic (Keep this as backup)
+            // Case: Old API Token Logic (For other GDFlix domains)
             else if (instantBtn.includes('url=') || instantBtn.includes('id=')) {
-                // ... (Existing API Logic code remains same) ...
                 try {
                     const token = instantBtn.split(/url=|id=/)[1]; 
                     const apiUrl = `${baseUrl}/api`;
@@ -100,7 +115,7 @@ async function gdFlixExtracter(link) {
                     }
                 } catch(err) { console.log(err.message); }
             }
-            // Case C: Direct Link
+            // Case: Plain Direct Link
             else {
                 streamLinks.push({ server: 'G-Drive Direct', link: instantBtn, type: 'mkv' });
             }
