@@ -35,110 +35,118 @@ async function gdFlixExtracter(link) {
             if (!btnLink) return;
             console.log(`🔍 Processing ${serverName}:`, btnLink);
 
-            // Case A: BusyCDN / FastCDN / Intermediate Pages (Jo screenshot mein hai)
-            if (btnLink.includes('busycdn') || btnLink.includes('fastcdn') || btnLink.includes('pages.dev')) {
-                try {
-                    console.log(`⏳ Visiting Intermediate Page for ${serverName}...`);
-                    
-                    const intRes = await axios.get(btnLink, { 
-                        headers,
-                        maxRedirects: 5 
-                    });
-                    
-                    const intHtml = intRes.data;
-                    const finalPageUrl = intRes.request.res.responseUrl || btnLink;
-                    let finalLink = null;
+            try {
+                // 1. Visit the link (Fast Cloud / Instant Page)
+                // Use maxRedirects to follow any jumps
+                const subRes = await axios.get(btnLink, { 
+                    headers, 
+                    maxRedirects: 5 
+                });
+                const subHtml = subRes.data;
+                const $$ = cheerio.load(subHtml);
+                const finalPageUrl = subRes.request.res.responseUrl || btnLink;
+                
+                let finalLink = null;
 
-                    // 1. Check URL Params (?url=...) - Most reliable
-                    if (finalPageUrl.includes('?url=')) {
-                        const extracted = finalPageUrl.split('?url=')[1].split('&')[0];
-                        if (extracted) {
-                            finalLink = decodeURIComponent(extracted);
-                            console.log(`✅ ${serverName}: Found in URL Param`);
-                        }
-                    }
+                // --- STRATEGY A: Check for "CLOUD RESUME DOWNLOAD" (Green Button) ---
+                // Ye specifically tumhare naye case (Fast Cloud) ke liye hai
+                const resumeCloudBtn = $$('a.btn-success:contains("CLOUD RESUME DOWNLOAD")').attr('href') ||
+                                       $$('a.btn-success:contains("Resume Download")').attr('href');
 
-                    // 2. Check Script (window.location)
-                    if (!finalLink) {
-                        const scriptMatch = intHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
-                                            intHtml.match(/window\.open\(["']([^"']+)["']\)/i) ||
-                                            intHtml.match(/url\s*=\s*["']([^"']+)["']/i);
-                        if (scriptMatch && scriptMatch[1]) {
-                            finalLink = scriptMatch[1];
-                            console.log(`✅ ${serverName}: Found in Script`);
-                        }
-                    }
-
-                    // 3. Check Download Button
-                    if (!finalLink) {
-                        const $$ = cheerio.load(intHtml);
-                        const dlBtn = $$('a[id="download"], a.btn-primary, a:contains("Download Here")').attr('href');
-                        if (dlBtn && dlBtn.startsWith('http')) {
-                            finalLink = dlBtn;
-                            console.log(`✅ ${serverName}: Found in HTML Button`);
-                        }
-                    }
-
-                    if (finalLink) {
-                        streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
-                    }
-
-                } catch (e) {
-                    console.log(`❌ Error processing ${serverName}:`, e.message);
+                if (resumeCloudBtn) {
+                    console.log(`✅ ${serverName}: Found Cloud Resume Button`);
+                    finalLink = resumeCloudBtn;
                 }
-            } 
-            // Case B: Old API Token Logic
-            else if (btnLink.includes('url=') || btnLink.includes('id=')) {
-                try {
-                    const token = btnLink.split(/url=|id=/)[1]; 
-                    const apiUrl = `${baseUrl}/api`;
-                    const formData = new URLSearchParams();
-                    formData.append('keys', token);
 
-                    const apiRes = await axios.post(apiUrl, formData, {
-                        headers: { 'x-token': currentUrl, 'Referer': currentUrl, 'Content-Type': 'application/x-www-form-urlencoded' }
-                    });
-                    if (apiRes.data && apiRes.data.url) {
-                        streamLinks.push({ server: serverName, link: apiRes.data.url, type: 'mkv' });
+                // --- STRATEGY B: Check URL Parameters (FastCDN / BusyCDN) ---
+                // Agar button nahi mila, toh URL param check karo (?url=...)
+                if (!finalLink && finalPageUrl.includes('?url=')) {
+                    const extracted = finalPageUrl.split('?url=')[1].split('&')[0];
+                    if (extracted) {
+                        finalLink = decodeURIComponent(extracted);
+                        console.log(`✅ ${serverName}: Found in URL Param`);
                     }
-                } catch(err) {}
-            }
-            // Case C: Direct Link
-            else {
-                streamLinks.push({ server: serverName, link: btnLink, type: 'mkv' });
+                }
+
+                // --- STRATEGY C: Script Variable (Instant Page JS) ---
+                if (!finalLink) {
+                    const scriptMatch = subHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
+                                        subHtml.match(/window\.open\(["']([^"']+)["']\)/i) ||
+                                        subHtml.match(/url\s*=\s*["']([^"']+)["']/i);
+                    if (scriptMatch && scriptMatch[1]) {
+                        finalLink = scriptMatch[1];
+                        console.log(`✅ ${serverName}: Found in Script`);
+                    }
+                }
+
+                // --- STRATEGY D: Fallback to Download Here button ---
+                if (!finalLink) {
+                    const dlBtn = $$('a[id="download"], a:contains("Download Here")').attr('href');
+                    if (dlBtn && dlBtn.startsWith('http')) {
+                        finalLink = dlBtn;
+                    }
+                }
+
+                // --- STRATEGY E: API Token (Old GDFlix Logic) ---
+                if (!finalLink && (btnLink.includes('url=') || btnLink.includes('id='))) {
+                     try {
+                        const token = btnLink.split(/url=|id=/)[1]; 
+                        const apiUrl = `${baseUrl}/api`;
+                        const formData = new URLSearchParams();
+                        formData.append('keys', token);
+
+                        const apiRes = await axios.post(apiUrl, formData, {
+                            headers: { 'x-token': currentUrl, 'Referer': currentUrl, 'Content-Type': 'application/x-www-form-urlencoded' }
+                        });
+                        if (apiRes.data && apiRes.data.url) {
+                            finalLink = apiRes.data.url;
+                            console.log(`✅ ${serverName}: Found via API`);
+                        }
+                    } catch(err) {}
+                }
+
+                // Push whatever we found
+                if (finalLink) {
+                    streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
+                } else {
+                    // Fallback: If nothing extracted, maybe the link itself is the file or handleable by player
+                    // streamLinks.push({ server: serverName + ' (Direct)', link: btnLink, type: 'mkv' });
+                }
+
+            } catch (e) {
+                console.log(`❌ Error processing ${serverName}:`, e.message);
             }
         };
 
-        // --- STRATEGY: Target Multiple Buttons ---
+        // --- TARGETING BUTTONS ---
         
-        // 1. Instant DL (Red Button)
+        // 1. Instant DL (Red)
         const instantLink = $('.btn-danger').attr('href');
         if (instantLink) await processButton(instantLink, 'G-Drive Instant');
 
-        // 2. Cloud Download [R2] (Green/Success Button or Text match)
-        // Screenshot mein ye 'Cloud Download [R2]' hai
+        // 2. Cloud Download [R2] (Green)
         let r2Link = $('a:contains("Cloud Download")').attr('href') || 
                      $('a:contains("[R2]")').attr('href');
-        
-        // Fallback: kabhi kabhi class alag hoti hai
-        if (!r2Link) r2Link = $('.btn-success').not(':contains("Login")').attr('href');
-        
         if (r2Link) await processButton(r2Link, 'Cloud R2');
 
-        // 3. Fast Cloud / Zipdisk (Purple Button)
+        // 3. Fast Cloud / Zipdisk (Purple/Others)
+        // Ye naya wala hai
         let fastCloudLink = $('a:contains("Fast Cloud")').attr('href') || 
                             $('a:contains("Zipdisk")').attr('href');
-        if (fastCloudLink) await processButton(fastCloudLink, 'Fast Cloud');
+        
+        if (fastCloudLink) {
+            await processButton(fastCloudLink, 'Fast Cloud / Zipdisk');
+        }
 
-
-        // --- STRATEGY 2: Resume/Bot Link ---
+        // --- STRATEGY 2: Resume/Bot Link (Secondary) ---
         const resumeBtn = $('.btn-secondary, .btn-info').attr('href');
         if (resumeBtn) {
             let botLink = resumeBtn.startsWith('http') ? resumeBtn : `${baseUrl}${resumeBtn}`;
+            // Resume links usually require login, adding just in case
             streamLinks.push({ server: 'Resume/Index Cloud', link: botLink, type: 'mkv' });
         }
 
-        // --- STRATEGY 3: Worker Link ---
+        // --- STRATEGY 3: Worker Link (Direct on page) ---
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             if (href && (href.includes('workers.dev') || href.includes('cf-worker'))) {
