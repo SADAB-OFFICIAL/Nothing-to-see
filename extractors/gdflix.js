@@ -13,7 +13,6 @@ async function gdFlixExtracter(link) {
         let $ = cheerio.load(data);
         let currentUrl = res.request.res.responseUrl || link;
 
-        // Check JS Redirect (location.replace)
         if (data.includes('location.replace')) {
             const redirectMatch = data.match(/location\.replace\(['"]([^'"]+)['"]\)/);
             if (redirectMatch && redirectMatch[1]) {
@@ -30,94 +29,92 @@ async function gdFlixExtracter(link) {
         const urlObj = new URL(currentUrl);
         const baseUrl = urlObj.origin;
 
-        // --- STRATEGY 1: Instant Link (GDrive/Worker) ---
-        // Class '.btn-danger' usually holds the Instant/G-Direct link
+        // --- STRATEGY 1: Instant Link (Processing busycdn / fastcdn) ---
         const instantBtn = $('.btn-danger').attr('href');
         
         if (instantBtn) {
             console.log('⚡ Instant Button Found:', instantBtn);
             
-            // Case A: Direct Link (No API needed)
-            if (!instantBtn.includes('url=') && !instantBtn.includes('id=')) {
-                // Check HEAD to resolve final link
+            // Check if it's the "BusyCDN" / "FastCDN" style link
+            if (instantBtn.includes('busycdn') || instantBtn.includes('fastcdn') || instantBtn.includes('pages.dev')) {
                 try {
-                    const headRes = await axios.head(instantBtn, { headers, maxRedirects: 5 });
-                    const finalUrl = headRes.request.res.responseUrl || instantBtn;
-                    streamLinks.push({ server: 'G-Drive Direct', link: finalUrl, type: 'mkv' });
+                    console.log('⏳ Visiting Intermediate Page:', instantBtn);
+                    
+                    // Fetch the intermediate page (The one in your screenshot)
+                    const intRes = await axios.get(instantBtn, { headers });
+                    const intHtml = intRes.data;
+                    const $$ = cheerio.load(intHtml);
+
+                    // 1. Try finding 'url=' inside the script tag or meta refresh
+                    // Screenshot page URL structure is usually: ...?url=https://final-link...
+                    const urlParamMatch = instantBtn.match(/[?&]url=([^&]+)/);
+                    
+                    if (urlParamMatch) {
+                        const finalLink = decodeURIComponent(urlParamMatch[1]);
+                        console.log('✅ Found Direct Link from URL Param:', finalLink);
+                        streamLinks.push({ server: 'G-Drive Direct', link: finalLink, type: 'mkv' });
+                    } 
+                    // 2. Try parsing the "Download Here" button from HTML
+                    else {
+                        const downloadHref = $$('a[id="download"], a.btn-primary, a:contains("Download Here")').attr('href');
+                        
+                        if (downloadHref && downloadHref !== '#') {
+                            console.log('✅ Found Direct Link from Button:', downloadHref);
+                            streamLinks.push({ server: 'G-Drive Direct', link: downloadHref, type: 'mkv' });
+                        } 
+                        // 3. Script Variable Extraction (Most likely scenario for 'One Click')
+                        else {
+                            const scriptUrl = intHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
+                                              intHtml.match(/window\.open\(["']([^"']+)["']\)/i) ||
+                                              intHtml.match(/let\s+url\s*=\s*["']([^"']+)["']/i);
+                            
+                            if (scriptUrl && scriptUrl[1]) {
+                                console.log('✅ Found Direct Link from Script:', scriptUrl[1]);
+                                streamLinks.push({ server: 'G-Drive Direct', link: scriptUrl[1], type: 'mkv' });
+                            } else {
+                                console.log('⚠️ Could not extract final link from intermediate page. pushing original.');
+                                streamLinks.push({ server: 'Instant Link (Verify)', link: instantBtn, type: 'mkv' });
+                            }
+                        }
+                    }
+
                 } catch (e) {
-                    streamLinks.push({ server: 'G-Drive Direct', link: instantBtn, type: 'mkv' });
+                    console.log('❌ Error visiting intermediate page:', e.message);
+                    streamLinks.push({ server: 'Instant Link', link: instantBtn, type: 'mkv' });
                 }
             } 
-            // Case B: API Token Logic (Standard GDFlix)
-            else {
+            // Case B: Old API Token Logic (Keep this as backup)
+            else if (instantBtn.includes('url=') || instantBtn.includes('id=')) {
+                // ... (Existing API Logic code remains same) ...
                 try {
-                    // Token URL se nikalo (after 'url=' or 'id=')
                     const token = instantBtn.split(/url=|id=/)[1]; 
                     const apiUrl = `${baseUrl}/api`;
-
-                    console.log(`🔑 Token: ${token}, API: ${apiUrl}`);
-
-                    // GDFlix API requires FormData
                     const formData = new URLSearchParams();
                     formData.append('keys', token);
 
                     const apiRes = await axios.post(apiUrl, formData, {
-                        headers: {
-                            'x-token': currentUrl, // Important: x-token header must be the current page URL
-                            'Referer': currentUrl,
-                            'Content-Type': 'application/x-www-form-urlencoded'
-                        }
+                        headers: { 'x-token': currentUrl, 'Referer': currentUrl, 'Content-Type': 'application/x-www-form-urlencoded' }
                     });
-
-                    const apiData = apiRes.data;
-                    console.log('📡 API Response:', apiData);
-
-                    if (apiData && apiData.url) {
-                        streamLinks.push({ 
-                            server: 'G-Drive Instant', 
-                            link: apiData.url, 
-                            type: 'mkv' 
-                        });
+                    if (apiRes.data && apiRes.data.url) {
+                        streamLinks.push({ server: 'G-Drive Instant', link: apiRes.data.url, type: 'mkv' });
                     }
-                } catch (err) {
-                    console.log('⚠️ Instant API Failed:', err.message);
-                }
+                } catch(err) { console.log(err.message); }
+            }
+            // Case C: Direct Link
+            else {
+                streamLinks.push({ server: 'G-Drive Direct', link: instantBtn, type: 'mkv' });
             }
         }
 
-        // --- STRATEGY 2: Resume/Bot Link (IndexBot/ResumeCloud) ---
-        // Class '.btn-secondary' or '.btn-info' usually holds Resume link
+        // --- STRATEGY 2: Resume/Bot Link ---
         const resumeBtn = $('.btn-secondary, .btn-info').attr('href');
-
         if (resumeBtn) {
             console.log('🤖 Resume Button Found:', resumeBtn);
-            
-            // Check if it's an external bot link or internal path
             let botLink = resumeBtn.startsWith('http') ? resumeBtn : `${baseUrl}${resumeBtn}`;
-
-            // Agar internal hai, toh us page par jaake "Login" ya "Download" button dhundo
-            try {
-                // If it looks like 'indexbot' or 'resume', we might need to dig deeper
-                // For now, resolving the redirect is usually enough for the player to handle it
-                // Or we can implement the ResumeBot extraction logic (complex)
-                
-                // Simplified: Just add the link, most players handle the redirect if it's direct
-                streamLinks.push({ 
-                    server: 'Resume/Index Cloud', 
-                    link: botLink, 
-                    type: 'mkv' 
-                });
-
-                // NOTE: Agar ResumeBot ka bhi token extract karna hai (Jaise tumhare purane code mein tha),
-                // toh wo logic yahan add karna padega. 
-                // Lekin Instant Link usually sufficient hota hai.
-
-            } catch (err) {
-                console.log('⚠️ Resume Path Failed:', err.message);
-            }
+            streamLinks.push({ server: 'Resume/Index Cloud', link: botLink, type: 'mkv' });
         }
 
-        // --- STRATEGY 3: Worker Link (Direct .workers.dev) ---
+        // --- STRATEGY 3: Worker Link ---
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             if (href && (href.includes('workers.dev') || href.includes('cf-worker'))) {
