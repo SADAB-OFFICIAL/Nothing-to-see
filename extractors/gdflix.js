@@ -13,7 +13,7 @@ async function gdFlixExtracter(link) {
         let $ = cheerio.load(data);
         let currentUrl = res.request.res.responseUrl || link;
 
-        // Handle JS Redirection (location.replace)
+        // Handle JS Redirect
         if (data.includes('location.replace')) {
             const redirectMatch = data.match(/location\.replace\(['"]([^'"]+)['"]\)/);
             if (redirectMatch && redirectMatch[1]) {
@@ -30,79 +30,67 @@ async function gdFlixExtracter(link) {
         const urlObj = new URL(currentUrl);
         const baseUrl = urlObj.origin;
 
-        // --- STRATEGY 1: Instant Link (Handling BusyCDN / FastCDN) ---
-        const instantBtn = $('.btn-danger').attr('href');
-        
-        if (instantBtn) {
-            console.log('⚡ Instant Button Found:', instantBtn);
-            
-            // Check for BusyCDN / FastCDN / Pages.dev pattern
-            if (instantBtn.includes('busycdn') || instantBtn.includes('fastcdn') || instantBtn.includes('pages.dev')) {
+        // --- Helper Function to Process Intermediate Links ---
+        const processButton = async (btnLink, serverName) => {
+            if (!btnLink) return;
+            console.log(`🔍 Processing ${serverName}:`, btnLink);
+
+            // Case A: BusyCDN / FastCDN / Intermediate Pages (Jo screenshot mein hai)
+            if (btnLink.includes('busycdn') || btnLink.includes('fastcdn') || btnLink.includes('pages.dev')) {
                 try {
-                    console.log('⏳ Visiting Intermediate Page:', instantBtn);
+                    console.log(`⏳ Visiting Intermediate Page for ${serverName}...`);
                     
-                    const intRes = await axios.get(instantBtn, { 
+                    const intRes = await axios.get(btnLink, { 
                         headers,
-                        maxRedirects: 5 // Ensure we follow redirects to reach fastcdn-dl.pages.dev
+                        maxRedirects: 5 
                     });
                     
                     const intHtml = intRes.data;
-                    const finalPageUrl = intRes.request.res.responseUrl || instantBtn;
-                    
-                    console.log('📍 Final Landing URL:', finalPageUrl);
-
+                    const finalPageUrl = intRes.request.res.responseUrl || btnLink;
                     let finalLink = null;
 
-                    // Method A: Check URL Parameters (Screenshot shows ?url=...)
-                    // Yeh sabse strong check hai based on your screenshot
+                    // 1. Check URL Params (?url=...) - Most reliable
                     if (finalPageUrl.includes('?url=')) {
                         const extracted = finalPageUrl.split('?url=')[1].split('&')[0];
                         if (extracted) {
                             finalLink = decodeURIComponent(extracted);
-                            console.log('✅ Found Direct Link in URL Param:', finalLink);
+                            console.log(`✅ ${serverName}: Found in URL Param`);
                         }
                     }
 
-                    // Method B: Script Variable (window.location / var url)
-                    // Agar URL param mein nahi mila, toh script mein dhoondo
+                    // 2. Check Script (window.location)
                     if (!finalLink) {
                         const scriptMatch = intHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
                                             intHtml.match(/window\.open\(["']([^"']+)["']\)/i) ||
-                                            intHtml.match(/url\s*=\s*["']([^"']+)["']/i) ||
-                                            intHtml.match(/domain\s*=\s*["']([^"']+)["']/i);
-                        
+                                            intHtml.match(/url\s*=\s*["']([^"']+)["']/i);
                         if (scriptMatch && scriptMatch[1]) {
                             finalLink = scriptMatch[1];
-                            console.log('✅ Found Direct Link in Script:', finalLink);
+                            console.log(`✅ ${serverName}: Found in Script`);
                         }
                     }
 
-                    // Method C: Button with ID 'download'
+                    // 3. Check Download Button
                     if (!finalLink) {
                         const $$ = cheerio.load(intHtml);
-                        const btnLink = $$('#download').attr('href') || $$('a.btn').attr('href');
-                        if (btnLink && btnLink !== '#' && btnLink.startsWith('http')) {
-                            finalLink = btnLink;
-                            console.log('✅ Found Direct Link in Button:', finalLink);
+                        const dlBtn = $$('a[id="download"], a.btn-primary, a:contains("Download Here")').attr('href');
+                        if (dlBtn && dlBtn.startsWith('http')) {
+                            finalLink = dlBtn;
+                            console.log(`✅ ${serverName}: Found in HTML Button`);
                         }
                     }
 
                     if (finalLink) {
-                        streamLinks.push({ server: 'G-Drive Direct', link: finalLink, type: 'mkv' });
-                    } else {
-                        console.log('⚠️ Failed to extract from Intermediate Page. Dumping URL for manual check:', finalPageUrl);
-                        // Fallback: Return original link just in case
-                        streamLinks.push({ server: 'Instant Link (Manual)', link: instantBtn, type: 'mkv' });
+                        streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
                     }
 
                 } catch (e) {
-                    console.log('❌ Error visiting intermediate page:', e.message);
+                    console.log(`❌ Error processing ${serverName}:`, e.message);
                 }
             } 
-            // Case: Old API Token Logic (For other GDFlix domains)
-            else if (instantBtn.includes('url=') || instantBtn.includes('id=')) {
+            // Case B: Old API Token Logic
+            else if (btnLink.includes('url=') || btnLink.includes('id=')) {
                 try {
-                    const token = instantBtn.split(/url=|id=/)[1]; 
+                    const token = btnLink.split(/url=|id=/)[1]; 
                     const apiUrl = `${baseUrl}/api`;
                     const formData = new URLSearchParams();
                     formData.append('keys', token);
@@ -111,20 +99,41 @@ async function gdFlixExtracter(link) {
                         headers: { 'x-token': currentUrl, 'Referer': currentUrl, 'Content-Type': 'application/x-www-form-urlencoded' }
                     });
                     if (apiRes.data && apiRes.data.url) {
-                        streamLinks.push({ server: 'G-Drive Instant', link: apiRes.data.url, type: 'mkv' });
+                        streamLinks.push({ server: serverName, link: apiRes.data.url, type: 'mkv' });
                     }
-                } catch(err) { console.log(err.message); }
+                } catch(err) {}
             }
-            // Case: Plain Direct Link
+            // Case C: Direct Link
             else {
-                streamLinks.push({ server: 'G-Drive Direct', link: instantBtn, type: 'mkv' });
+                streamLinks.push({ server: serverName, link: btnLink, type: 'mkv' });
             }
-        }
+        };
+
+        // --- STRATEGY: Target Multiple Buttons ---
+        
+        // 1. Instant DL (Red Button)
+        const instantLink = $('.btn-danger').attr('href');
+        if (instantLink) await processButton(instantLink, 'G-Drive Instant');
+
+        // 2. Cloud Download [R2] (Green/Success Button or Text match)
+        // Screenshot mein ye 'Cloud Download [R2]' hai
+        let r2Link = $('a:contains("Cloud Download")').attr('href') || 
+                     $('a:contains("[R2]")').attr('href');
+        
+        // Fallback: kabhi kabhi class alag hoti hai
+        if (!r2Link) r2Link = $('.btn-success').not(':contains("Login")').attr('href');
+        
+        if (r2Link) await processButton(r2Link, 'Cloud R2');
+
+        // 3. Fast Cloud / Zipdisk (Purple Button)
+        let fastCloudLink = $('a:contains("Fast Cloud")').attr('href') || 
+                            $('a:contains("Zipdisk")').attr('href');
+        if (fastCloudLink) await processButton(fastCloudLink, 'Fast Cloud');
+
 
         // --- STRATEGY 2: Resume/Bot Link ---
         const resumeBtn = $('.btn-secondary, .btn-info').attr('href');
         if (resumeBtn) {
-            console.log('🤖 Resume Button Found:', resumeBtn);
             let botLink = resumeBtn.startsWith('http') ? resumeBtn : `${baseUrl}${resumeBtn}`;
             streamLinks.push({ server: 'Resume/Index Cloud', link: botLink, type: 'mkv' });
         }
@@ -137,7 +146,7 @@ async function gdFlixExtracter(link) {
             }
         });
 
-        // Remove duplicates
+        // Final Deduplication
         const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
             .map(link => streamLinks.find(a => a.link === link));
 
