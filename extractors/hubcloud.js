@@ -9,7 +9,10 @@ const decode = function (value) {
 
 async function hubcloudExtracter(link) {
     try {
-        console.log('🚀 HubCloud Logic Started for:', link);
+        // Clean link (remove trailing chars like &)
+        if (link.endsWith('&')) link = link.slice(0, -1);
+
+        console.log('🚀 HubCloud/V-Cloud Logic Started for:', link);
         const baseUrl = link.split('/').slice(0, 3).join('/');
         let streamLinks = [];
 
@@ -29,7 +32,7 @@ async function hubcloudExtracter(link) {
             vcloudLink = `${baseUrl}${vcloudLink}`;
         }
 
-        console.log('🔄 Target V-Cloud Link found:', vcloudLink);
+        console.log('🔄 Target Link found:', vcloudLink);
 
         // --- Step 2: Fetch Target Page ---
         const vcloudRes = await axios.get(vcloudLink, {
@@ -41,7 +44,7 @@ async function hubcloudExtracter(link) {
         
         const html = vcloudRes.data;
         const $ = cheerio.load(html);
-        console.log('📄 Page Fetched. Scanning for valid links...');
+        console.log('📄 Page Fetched. Scanning for links...');
 
         const foundLinks = new Set();
 
@@ -53,12 +56,11 @@ async function hubcloudExtracter(link) {
             }
         });
 
-        // --- METHOD B: Script Regex ---
-        // Regex ko thoda strict kiya hai taaki social media na pakde
-        const regexPattern = /https?:\/\/[^"'\s<>]+(?:token=|id=|file\/|\.dev|drive|pixeldrain|boblover|hubcloud)/gi;
+        // --- METHOD B: Script Regex (UPDATED FOR VCLOUD) ---
+        // Added 'vcloud' to the regex
+        const regexPattern = /https?:\/\/[^"'\s<>]+(?:token=|id=|file\/|\.dev|drive|pixeldrain|boblover|hubcloud|vcloud)/gi;
         const scriptMatches = html.match(regexPattern) || [];
         
-        // --- STRICT FILTER LIST ---
         const JUNK_DOMAINS = [
             't.me', 'telegram', 'facebook', 'instagram', 'twitter', 'whatsapp', 'discord', 
             'wp-content', 'wp-includes', 'pixel.wp.com', 'google.com/search'
@@ -67,11 +69,10 @@ async function hubcloudExtracter(link) {
         scriptMatches.forEach(match => {
             let cleanLink = match.replace(/['";\)]+$/, '');
             
-            // 🛑 Garbage Filter
             const isJunk = JUNK_DOMAINS.some(d => cleanLink.includes(d));
+            // Base URL filter ko thoda smart banaya hai
             const isBaseUrl = cleanLink === baseUrl || cleanLink === link || cleanLink === vcloudLink;
             
-            // Sirf tab add karo jab wo junk na ho
             if (!isJunk && !isBaseUrl) {
                 foundLinks.add(cleanLink);
             }
@@ -82,17 +83,16 @@ async function hubcloudExtracter(link) {
         // --- Step 3: Process & Resolve ---
         const processingPromises = Array.from(foundLinks).map(async (rawLink) => {
             try {
-                // Secondary Filter Check
                 if (JUNK_DOMAINS.some(d => rawLink.includes(d))) return;
 
-                // Determine Server Name
                 let serverName = 'Cloud Server';
                 if (rawLink.includes('boblover')) serverName = 'FSL/TRS Server';
                 else if (rawLink.includes('pixeld')) serverName = 'Pixeldrain';
                 else if (rawLink.includes('worker')) serverName = 'CF Worker';
 
-                // --- Resolution Logic ---
-                if (rawLink.includes('boblover') || rawLink.includes('hubcloud') || rawLink.includes('/?id=')) {
+                // --- Resolution Logic (UPDATED) ---
+                // Added 'vcloud' check here too
+                if (rawLink.includes('boblover') || rawLink.includes('hubcloud') || rawLink.includes('vcloud') || rawLink.includes('/?id=')) {
                     
                     const newLinkRes = await axios.head(rawLink, { 
                         headers: { ...headers, 'Referer': vcloudLink },
@@ -104,16 +104,11 @@ async function hubcloudExtracter(link) {
                     let nestedLink = finalUrl.split('link=')?.[1] || finalUrl;
                     try { nestedLink = decodeURIComponent(nestedLink); } catch(e){}
 
-                    // 🛑 Agar resolve hoke wapas wahi page aa gaya ya Telegram ban gaya, toh discard karo
-                    if (nestedLink.includes('t.me') || nestedLink === vcloudLink) {
-                        return;
-                    }
+                    if (nestedLink.includes('t.me') || nestedLink === vcloudLink) return;
 
-                    // Rename server if resolved to something known
                     if (nestedLink.includes('pixeld')) serverName = 'Pixeldrain';
                     else if (nestedLink.includes('workers')) serverName = 'CF Worker';
 
-                    // Pixeldrain Fix
                     if (nestedLink.includes('pixeld') && !nestedLink.includes('api')) {
                         const token = nestedLink.split('/').pop();
                         nestedLink = `https://pixeldrain.com/api/file/${token}?download`;
@@ -122,7 +117,6 @@ async function hubcloudExtracter(link) {
                     streamLinks.push({ server: serverName, link: nestedLink, type: 'mkv' });
 
                 } else {
-                    // Direct links handling
                     if (rawLink.includes('pixeld')) {
                          if (!rawLink.includes('api')) {
                             const token = rawLink.split('/').pop();
@@ -131,30 +125,27 @@ async function hubcloudExtracter(link) {
                         }
                         serverName = 'Pixeldrain';
                     }
-                    
-                    // Push direct link
                     streamLinks.push({ server: serverName, link: rawLink, type: 'mkv' });
                 }
 
             } catch (error) {
-                // console.log(`⚠️ Link failed: ${rawLink}`);
+                // Silent error
             }
         });
 
         await Promise.all(processingPromises);
 
-        // --- Step 4: Final Cleanup (Duplicate Removal) ---
         const uniqueStreams = [];
         const seenUrls = new Set();
 
         streamLinks.forEach(item => {
-            // Final check: Link must NOT be empty, NOT be Telegram, NOT be the Base URL
             if (
                 item.link && 
                 item.link.startsWith('http') && 
                 !seenUrls.has(item.link) &&
                 !item.link.includes('t.me') &&
-                !item.link.includes('hubcloud.foo/drive') // Specific filter for your issue
+                !item.link.includes('hubcloud.foo/drive') &&
+                !item.link.includes('vcloud.zip/drive') // Added vcloud filter
             ) {
                 seenUrls.add(item.link);
                 uniqueStreams.push(item);
