@@ -30,6 +30,17 @@ async function gdFlixExtracter(link) {
         const urlObj = new URL(currentUrl);
         const baseUrl = urlObj.origin;
 
+        // --- Helper: Convert PixelDrain View Link to Download Link ---
+        const convertPixelDrain = (url) => {
+            if (!url) return null;
+            // Match /u/ID or /file/ID (Handles .com, .dev, .net)
+            const match = url.match(/pixeldrain\.(?:com|dev|net|org)\/(?:u|file)\/([a-zA-Z0-9]+)/);
+            if (match && match[1]) {
+                return `https://pixeldrain.com/api/file/${match[1]}?download`;
+            }
+            return null;
+        };
+
         // --- Helper Function to Process Intermediate Links ---
         const processButton = async (btnLink, serverName) => {
             if (!btnLink || btnLink === '#') return;
@@ -39,21 +50,18 @@ async function gdFlixExtracter(link) {
                 btnLink = `${baseUrl}${btnLink.startsWith('/') ? '' : '/'}${btnLink}`;
             }
 
-            // --- SPECIAL CASE: PixelDrain Direct Handling ---
-            // Agar button ka link seedha pixeldrain hai
-            if (btnLink.includes('pixeldrain') || btnLink.includes('pixeld')) {
-                console.log(`✅ ${serverName}: Detected Direct PixelDrain Link`);
-                const id = btnLink.split('/').pop(); 
-                // Convert .dev/.com/u/ to api download link
-                const directLink = `https://pixeldrain.com/api/file/${id}?download`;
-                streamLinks.push({ server: 'PixelDrain', link: directLink, type: 'mkv' });
+            // --- SPECIAL CASE 1: Direct PixelDrain Button ---
+            const directPd = convertPixelDrain(btnLink);
+            if (directPd) {
+                console.log(`✅ ${serverName}: Converted to Direct API Link`);
+                streamLinks.push({ server: 'PixelDrain', link: directPd, type: 'mkv' });
                 return;
             }
 
             console.log(`🔍 Processing ${serverName}:`, btnLink);
 
             try {
-                // --- CASE 1: ZFile / Fast Cloud ---
+                // --- CASE 2: ZFile / Fast Cloud ---
                 if (btnLink.includes('/zfile/')) {
                     console.log(`⏳ Visiting ZFile Page...`);
                     const zRes = await axios.get(btnLink, { headers });
@@ -70,7 +78,7 @@ async function gdFlixExtracter(link) {
                     }
                 }
 
-                // --- CASE 2: BusyCDN / FastCDN / Pages.dev ---
+                // --- CASE 3: BusyCDN / FastCDN / Pages.dev ---
                 else if (btnLink.includes('busycdn') || btnLink.includes('fastcdn') || btnLink.includes('pages.dev')) {
                     console.log(`⏳ Visiting Intermediate Page...`);
                     const intRes = await axios.get(btnLink, { headers, maxRedirects: 5 });
@@ -78,30 +86,38 @@ async function gdFlixExtracter(link) {
                     const finalPageUrl = intRes.request.res.responseUrl || btnLink;
                     let finalLink = null;
 
-                    // A. Check URL Param
+                    // A. Check if landed on PixelDrain directly
+                    const landedPd = convertPixelDrain(finalPageUrl);
+                    if (landedPd) {
+                        console.log(`✅ ${serverName}: Redirected to PixelDrain`);
+                        streamLinks.push({ server: 'PixelDrain', link: landedPd, type: 'mkv' });
+                        return;
+                    }
+
+                    // B. Check URL Param
                     if (finalPageUrl.includes('?url=')) {
                         const extracted = finalPageUrl.split('?url=')[1].split('&')[0];
                         if (extracted) finalLink = decodeURIComponent(extracted);
                     }
 
-                    // B. Check Script
+                    // C. Check Script
                     if (!finalLink) {
                         const scriptMatch = intHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
                                             intHtml.match(/url\s*=\s*["']([^"']+)["']/i);
                         if (scriptMatch) finalLink = scriptMatch[1];
                     }
 
-                    // C. Check Download Button
+                    // D. Check Download Button
                     if (!finalLink) {
                         const $$ = cheerio.load(intHtml);
                         const dlBtn = $$('a[id="download"], a:contains("Download Here")').attr('href');
                         if (dlBtn && dlBtn.startsWith('http')) finalLink = dlBtn;
                     }
 
-                    // *** PIXELDRAIN CHECK AFTER RESOLVE ***
-                    if (finalLink && (finalLink.includes('pixeldrain') || finalLink.includes('pixeld'))) {
-                        const id = finalLink.split('/').pop();
-                        finalLink = `https://pixeldrain.com/api/file/${id}?download`;
+                    // *** RE-CHECK: If extracted link is PixelDrain ***
+                    const extractedPd = convertPixelDrain(finalLink);
+                    if (extractedPd) {
+                        finalLink = extractedPd;
                         serverName = 'PixelDrain';
                     }
 
@@ -110,7 +126,7 @@ async function gdFlixExtracter(link) {
                     }
                 } 
                 
-                // --- CASE 3: API Token Logic ---
+                // --- CASE 4: API Token Logic ---
                 else if (btnLink.includes('url=') || btnLink.includes('id=')) {
                     try {
                         const token = btnLink.split(/url=|id=/)[1]; 
@@ -126,7 +142,7 @@ async function gdFlixExtracter(link) {
                         }
                     } catch(err) {}
                 }
-                // --- CASE 4: Fallback Direct ---
+                // --- CASE 5: Fallback Direct ---
                 else {
                     streamLinks.push({ server: serverName, link: btnLink, type: 'mkv' });
                 }
@@ -137,34 +153,29 @@ async function gdFlixExtracter(link) {
         };
 
         // --- NEW STRATEGY: SCAN ALL BUTTONS ---
-        // Instead of selecting specific classes, scan all 'a' tags with button classes
         const buttons = $('a.btn, a.button, a[class*="btn-"]');
-        
-        // Use a Set to avoid processing the same link multiple times
         const processedLinks = new Set();
         const promises = [];
 
         buttons.each((i, el) => {
             const btn = $(el);
             const href = btn.attr('href');
-            const text = btn.text().toUpperCase(); // Case insensitive match
+            const text = btn.text().toUpperCase();
 
             if (!href || href === '#' || href.startsWith('javascript') || processedLinks.has(href)) return;
 
             processedLinks.add(href);
 
-            // Determine what this button is
             let type = null;
 
             if (text.includes('INSTANT')) type = 'G-Drive Instant';
-            else if (text.includes('CLOUD') && text.includes('RESUME')) type = 'Resume Cloud'; // Explicit Resume
+            else if (text.includes('CLOUD') && text.includes('RESUME')) type = 'Resume Cloud';
             else if (text.includes('CLOUD') && text.includes('R2')) type = 'Cloud R2';
             else if (text.includes('FAST CLOUD') || text.includes('ZIPDISK')) type = 'Fast Cloud';
             else if (text.includes('PIXELDRAIN')) type = 'PixelDrain';
-            else if (href.includes('pixeldrain') || href.includes('pixeld')) type = 'PixelDrain'; // Check HREF too
+            else if (href.includes('pixeldrain') || href.includes('pixeld')) type = 'PixelDrain'; // Catch by URL
             else if (text.includes('RESUME') || text.includes('BOT')) type = 'Resume/Index Cloud';
             
-            // If recognized, process it
             if (type) {
                 promises.push(processButton(href, type));
             }
@@ -176,7 +187,6 @@ async function gdFlixExtracter(link) {
         $('a').each((i, el) => {
             const href = $(el).attr('href');
             if (href && (href.includes('workers.dev') || href.includes('cf-worker'))) {
-                // Only add if not already in streamLinks
                 if (!streamLinks.some(s => s.link === href)) {
                     streamLinks.push({ server: 'CF Worker', link: href, type: 'mkv' });
                 }
