@@ -4,6 +4,7 @@ const headers = require('../headers');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper for Base64 Decoding
 const decodeBase64 = (str) => {
     try {
         return Buffer.from(str, 'base64').toString('utf-8');
@@ -14,21 +15,21 @@ const decodeBase64 = (str) => {
 
 async function nexdriveExtractor(url) {
     try {
-        console.log('🚀 NexDrive Logic Started for:', url);
+        console.log('🚀 [FINAL] NexDrive Logic Started for:', url);
         const streamLinks = [];
 
         // --- Step 1: Initial Page Load ---
         const res = await axios.get(url, { headers });
         let $ = cheerio.load(res.data);
 
-        // --- Step 2: Unlock Logic ---
+        // --- Step 2: Unlock Logic (MobileJSR Client-Side) ---
         const scriptContent = $('script:contains("const encoded =")').html();
         if (scriptContent) {
             const match = scriptContent.match(/const\s+encoded\s*=\s*"([^"]+)"/);
             if (match && match[1]) {
                 const decodedHtml = decodeBase64(match[1]);
                 $ = cheerio.load(decodedHtml);
-                console.log('🔓 Decoded Successfully!');
+                console.log('🔓 MobileJSR Decoded Successfully!');
             }
         }
 
@@ -41,35 +42,50 @@ async function nexdriveExtractor(url) {
             
             if (!href || href === '#' || !href.startsWith('http')) return;
 
-            // === A. G-Direct Processing ===
+            // ==================================================
+            // CASE A: G-Direct [Instant] -> FastDL
+            // ==================================================
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
                 const p = (async () => {
-                    console.log('⚡ Found G-Direct:', href);
+                    console.log('⚡ Processing G-Direct:', href);
                     try {
-                        const fastRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
+                        // Visit FastDL Page
+                        const fastRes = await axios.get(href, { 
+                            headers: { ...headers, 'Referer': url } 
+                        });
                         const $$ = cheerio.load(fastRes.data);
-                        const finalLink = $$('a.btn-primary').attr('href') || 
-                                          $$('a:contains("Download Now")').attr('href');
                         
-                        if (finalLink) {
+                        // Try multiple selectors for the final download button
+                        const finalLink = $$('a#download').attr('href') ||               // ID selector
+                                          $$('a.btn-success').attr('href') ||            // Class selector
+                                          $$('a.btn-primary').attr('href') ||            // Class selector
+                                          $$('a:contains("Download Now")').attr('href'); // Text selector
+                        
+                        if (finalLink && finalLink.startsWith('http')) {
+                            console.log('✅ G-Direct Link Extracted:', finalLink);
                             streamLinks.push({ server: 'G-Direct [Instant]', link: finalLink, type: 'mkv' });
+                        } else {
+                            console.log('⚠️ G-Direct page loaded but no button found.');
                         }
-                    } catch (e) { console.log('❌ G-Direct Error:', e.message); }
+                    } catch (e) {
+                        console.log('❌ G-Direct Error:', e.message);
+                    }
                 })();
                 promises.push(p);
             }
 
-            // === B. M-Cloud Processing (FIXED) ===
+            // ==================================================
+            // CASE B: M-Cloud [Resumable] -> GamerXYT
+            // ==================================================
             if (text.includes('M-Cloud') || href.includes('mcloud.mom')) {
                 const p = (async () => {
-                    console.log('☁️ Found M-Cloud Link:', href);
+                    console.log('☁️ Processing M-Cloud:', href);
                     try {
-                        // 1. Visit M-Cloud Page
-                        const mRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
+                        // 1. Visit M-Cloud
+                        const mRes = await axios.get(href, { headers });
                         const mHtml = mRes.data;
                         
-                        // 2. Extract Redirect URL from Scripts (The Magic Fix ✨)
-                        // Dhoondo: var url = 'https://...' OR window.location = '...'
+                        // 2. Extract JS Redirect (No Form)
                         let finalUrl = null;
                         const scriptMatch = mHtml.match(/var\s+url\s*=\s*['"]([^'"]+)['"]/) || 
                                             mHtml.match(/window\.open\(['"]([^'"]+)['"]\)/) ||
@@ -77,25 +93,14 @@ async function nexdriveExtractor(url) {
 
                         if (scriptMatch && scriptMatch[1]) {
                             finalUrl = scriptMatch[1];
-                            console.log('✅ Extracted M-Cloud Redirect URL:', finalUrl);
-                        } else {
-                            // Fallback: Check for Form (Rare case now)
-                            const $m = cheerio.load(mHtml);
-                            if ($m('form').length > 0) {
-                                // ... Old form logic if needed, but Script Match usually works ...
-                                console.log('⚠️ Script match failed. Checking for form...');
-                            } else {
-                                console.log('❌ Could not extract link from M-Cloud script.');
-                                return; 
-                            }
-                        }
+                        } 
 
+                        // 3. If URL found, Visit GamerXYT
                         if (finalUrl) {
-                            // 3. Visit GamerXYT Page (Final Page)
                             const finalRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
                             const $f = cheerio.load(finalRes.data);
                             
-                            // 4. Extract Links (FSL, Pixel, etc.)
+                            // 4. Extract Links
                             const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
                             const innerPromises = [];
 
@@ -139,9 +144,8 @@ async function nexdriveExtractor(url) {
                             });
                             await Promise.all(innerPromises);
                         }
-
                     } catch (e) {
-                        console.log('❌ M-Cloud Critical Error:', e.message);
+                        console.log('❌ M-Cloud Error:', e.message);
                     }
                 })();
                 promises.push(p);
@@ -150,9 +154,12 @@ async function nexdriveExtractor(url) {
 
         await Promise.all(promises);
         
-        // Final Cleanup
+        // Remove duplicates
         const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
             .map(link => streamLinks.find(a => a.link === link));
+
+        // Sort: Put G-Direct first
+        uniqueStreams.sort((a, b) => (a.server.includes('G-Direct') ? -1 : 1));
 
         return uniqueStreams;
 
