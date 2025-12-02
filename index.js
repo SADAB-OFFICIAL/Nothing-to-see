@@ -1,25 +1,27 @@
 const express = require('express');
 const cors = require('cors');
 
-// Import Extractors
+// --- Import Extractors ---
 const hubcloudExtracter = require('./extractors/hubcloud');
 const gdFlixExtracter = require('./extractors/gdflix');
+const nexdriveExtractor = require('./extractors/nexdrive'); // New Addition
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS for all origins
+// Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
 
-// --- Home Route (Status Check) ---
+// --- Home Route (Status & Info) ---
 app.get('/', (req, res) => {
     res.json({
         status: 'Online 🟢',
-        message: 'Universal Extractor API is running.',
-        routes: {
-            hubcloud: '/hubcloud?url=YOUR_LINK',
-            gdflix: '/gdflix?url=YOUR_LINK'
+        message: 'Universal Media Extractor API',
+        endpoints: {
+            hubcloud: '/hubcloud?url=https://hubcloud.link/...',
+            gdflix: '/gdflix?url=https://gdflix.net/...',
+            nexdrive: '/nexdrive?url=https://mobilejsr.lol/...'
         },
         maintainer: 'Master Pro Coder'
     });
@@ -59,9 +61,30 @@ app.get('/gdflix', async (req, res) => {
     }
 });
 
+// --- Route 3: NexDrive / MobileJSR ---
+app.get('/nexdrive', async (req, res) => {
+    const url = req.query.url;
+
+    if (!url) {
+        return res.status(400).json({ error: 'URL parameter is missing.' });
+    }
+
+    try {
+        const streams = await nexdriveExtractor(url);
+        res.json(streams);
+    } catch (error) {
+        console.error('API Error (NexDrive):', error.message);
+        res.status(500).json({ error: 'Extraction Failed', details: error.message });
+    }
+});
+
 // --- Start Server ---
 app.listen(PORT, () => {
-    console.log(`🚀 Server is running on port ${PORT}`);
-    console.log(`👉 Test HubCloud: http://localhost:${PORT}/hubcloud?url=...`);
-    console.log(`👉 Test GDFlix: http://localhost:${PORT}/gdflix?url=...`);
+    console.log(`=================================================`);
+    console.log(`🚀 Universal Extractor Server running on port ${PORT}`);
+    console.log(`=================================================`);
+    console.log(`👉 HubCloud: http://localhost:${PORT}/hubcloud`);
+    console.log(`👉 GDFlix:   http://localhost:${PORT}/gdflix`);
+    console.log(`👉 NexDrive: http://localhost:${PORT}/nexdrive`);
+    console.log(`=================================================`);
 });
