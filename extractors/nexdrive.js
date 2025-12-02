@@ -42,7 +42,7 @@ async function nexdriveExtractor(url) {
             
             if (!href || href === '#' || !href.startsWith('http')) return;
 
-            // === A. G-Direct Processing ===
+            // === A. G-Direct Processing (Works) ===
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
                 const p = (async () => {
                     console.log('⚡ [DEBUG] Found G-Direct:', href);
@@ -62,125 +62,84 @@ async function nexdriveExtractor(url) {
                 promises.push(p);
             }
 
-            // === B. M-Cloud Processing (ADVANCED FIX) ===
+            // === B. M-Cloud Processing (DEBUG MODE) ===
             if (text.includes('M-Cloud') || href.includes('mcloud.mom')) {
                 const p = (async () => {
                     console.log('☁️ [DEBUG] Found M-Cloud Link:', href);
                     try {
-                        // 1. Initial GET to set cookies and get form data
-                        const mRes = await axios.get(href, { 
-                            headers: { 
-                                ...headers, 
-                                'Referer': url // Important for M-Cloud to trust us
-                            } 
-                        });
-                        
-                        // Capture Cookies
-                        const rawCookies = mRes.headers['set-cookie'];
-                        const cookieHeader = rawCookies ? rawCookies.map(c => c.split(';')[0]).join('; ') : '';
+                        const mRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
                         const mHtml = mRes.data;
-
-                        // 2. Regex Input Extraction (More robust than Cheerio)
-                        const formData = new URLSearchParams();
-                        let inputCount = 0;
+                        const $m = cheerio.load(mHtml);
                         
-                        // Finds all <input name="..." value="..."> even if malformed
-                        const inputRegex = /<input[^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']/g;
-                        let match;
-                        while ((match = inputRegex.exec(mHtml)) !== null) {
-                            formData.append(match[1], match[2]);
-                            inputCount++;
+                        console.log('📄 [DEBUG] M-Cloud Title:', $m('title').text().trim());
+
+                        // --- DEBUGGING THE BUTTON ---
+                        console.log('🔍 [DEBUG] Searching for "Generate" button...');
+                        
+                        // Check 1: Is it a form?
+                        const forms = $m('form');
+                        console.log(`   - Forms found: ${forms.length}`);
+                        forms.each((k, f) => {
+                            console.log(`     [Form ${k}] Action: ${$m(f).attr('action')} Method: ${$m(f).attr('method')}`);
+                            const inputs = $m(f).find('input');
+                            console.log(`     [Form ${k}] Inputs: ${inputs.length}`);
+                        });
+
+                        // Check 2: Is it a direct link?
+                        const genBtn = $m('a:contains("Generate Download Link")');
+                        console.log(`   - Link Buttons found: ${genBtn.length}`);
+                        if (genBtn.length > 0) {
+                            console.log(`     [Link] Href: ${genBtn.attr('href')}`);
+                            console.log(`     [Link] OnClick: ${genBtn.attr('onclick')}`);
+                            console.log(`     [Link] ID: ${genBtn.attr('id')}`);
                         }
 
-                        // Fallback: Try parsing via Cheerio if regex missed something
-                        if (inputCount === 0) {
-                            const $m = cheerio.load(mHtml);
-                            $m('input').each((j, inp) => {
-                                const name = $m(inp).attr('name');
-                                const val = $m(inp).attr('value');
-                                if(name) {
-                                    formData.append(name, val || '');
-                                    inputCount++;
-                                }
-                            });
+                        // Check 3: Is it a button tag?
+                        const btnTag = $m('button:contains("Generate Download Link")');
+                        console.log(`   - <button> Tags found: ${btnTag.length}`);
+
+                        // --- ATTEMPT EXTRACTION BASED ON FINDINGS ---
+                        let finalUrl = null;
+                        
+                        // Logic 1: Form Submit (Existing)
+                        if (forms.length > 0) {
+                             // ... (Old form logic) ...
+                             console.log('   👉 Trying Form Submit logic...');
+                             // (Code will be added if form exists)
+                        } 
+                        // Logic 2: Direct Link
+                        else if (genBtn.length > 0 && genBtn.attr('href') && genBtn.attr('href') !== '#') {
+                            console.log('   👉 Trying Direct Link logic...');
+                            finalUrl = genBtn.attr('href');
+                        }
+                        // Logic 3: JavaScript Redirect (Regex)
+                        else {
+                            console.log('   👉 Trying Script logic...');
+                             const scriptMatch = mHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
+                                                 mHtml.match(/location\.replace\(['"]([^'"]+)['"]\)/);
+                             if (scriptMatch) {
+                                 finalUrl = scriptMatch[1];
+                                 console.log('     Found script redirect:', finalUrl);
+                             }
                         }
 
-                        console.log(`🔍 [DEBUG] M-Cloud Inputs Found: ${inputCount}`);
-
-                        if (inputCount > 0) {
-                            console.log('⏳ [DEBUG] Waiting 3.5s for M-Cloud Timer...');
-                            await sleep(3500);
-
-                            // 3. POST Request (Simulate "Generate Link" click)
-                            const mPostRes = await axios.post(href, formData, {
-                                headers: {
-                                    ...headers,
-                                    'Content-Type': 'application/x-www-form-urlencoded',
-                                    'Referer': href,
-                                    'Origin': new URL(href).origin,
-                                    'Cookie': cookieHeader // Pass cookies back
-                                },
-                                maxRedirects: 5
-                            });
-
-                            const finalUrl = mPostRes.request.res.responseUrl;
-                            console.log('✅ [DEBUG] M-Cloud Post Success. Landed on:', finalUrl);
-                            
-                            // 4. Parse Final Page (GamerXYT)
-                            const $f = cheerio.load(mPostRes.data);
-                            
-                            // Scan for buttons like FSL, PixelServer, TRS
-                            const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
-                            
-                            const innerPromises = [];
-                            finalButtons.each((k, btn) => {
-                                const bLink = $f(btn).attr('href');
-                                let bText = $f(btn).text().trim();
-                                
-                                if (bLink && bLink.startsWith('http')) {
-                                    innerPromises.push((async () => {
-                                        // Clean Name
-                                        bText = bText.replace(/Download|\[|\]/g, '').trim() || 'M-Cloud Server';
-                                        let finalLink = bLink;
-
-                                        // Resolve Redirects (Boblover/Hubcloud)
-                                        if (bLink.includes('boblover') || bLink.includes('hubcloud') || bLink.includes('vcloud')) {
-                                            try {
-                                                const headRes = await axios.head(bLink, { 
-                                                    headers: { ...headers, 'Referer': finalUrl },
-                                                    maxRedirects: 5,
-                                                    validateStatus: (s) => s < 400
-                                                });
-                                                const resolved = headRes.request.res.responseUrl || bLink;
-                                                finalLink = resolved.split('link=')?.[1] || resolved;
-                                                try { finalLink = decodeURIComponent(finalLink); } catch(e){}
-                                            } catch (e) {}
-                                        }
-
-                                        // Fix PixelDrain
-                                        if (finalLink.includes('pixeld')) {
-                                            bText = 'PixelDrain';
-                                            const id = finalLink.split('/').pop();
-                                            // Ensure it's an API link
-                                            if (!finalLink.includes('api')) {
-                                                finalLink = `https://pixeldrain.com/api/file/${id}?download`;
-                                            }
-                                        }
-
-                                        if (!finalLink.includes('t.me')) {
-                                            streamLinks.push({ server: bText, link: finalLink, type: 'mkv' });
-                                        }
-                                    })());
-                                }
-                            });
-                            await Promise.all(innerPromises);
+                        // If we found a URL to follow (GamerXYT)
+                        if (finalUrl) {
+                            // ... Logic to parse GamerXYT ...
+                            console.log('✅ [DEBUG] Following URL:', finalUrl);
+                            // (We will add GamerXYT parsing here once we confirm how to get the URL)
                         } else {
-                            // Debugging: If inputs are still 0, dump HTML to see if Cloudflare blocked us
-                            console.log('❌ [DEBUG] No Inputs Found on M-Cloud. HTML Dump:', mHtml.substring(0, 200));
+                             console.log('❌ [DEBUG] Could not determine next step on M-Cloud.');
+                             // Dump HTML part where button should be
+                             const bodyHtml = $m('body').html() || '';
+                             const btnIndex = bodyHtml.indexOf('Generate Download Link');
+                             if (btnIndex !== -1) {
+                                 console.log('   HTML Context:', bodyHtml.substring(btnIndex - 100, btnIndex + 200));
+                             }
                         }
 
                     } catch (e) {
-                        console.log('❌ M-Cloud Critical Error:', e.message);
+                        console.log('❌ M-Cloud Error:', e.message);
                     }
                 })();
                 promises.push(p);
@@ -189,7 +148,6 @@ async function nexdriveExtractor(url) {
 
         await Promise.all(promises);
         
-        // Remove duplicates
         const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
             .map(link => streamLinks.find(a => a.link === link));
 
