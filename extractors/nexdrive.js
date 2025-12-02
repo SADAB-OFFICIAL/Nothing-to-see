@@ -2,138 +2,112 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const headers = require('../headers');
 
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+// Helper for Base64 Decoding
+const decodeBase64 = (str) => {
+    try {
+        return Buffer.from(str, 'base64').toString('utf-8');
+    } catch (e) {
+        return '';
+    }
+};
 
 async function nexdriveExtractor(url) {
     try {
-        console.log('🚀 [DEBUG MODE] NexDrive Logic Started for:', url);
+        console.log('🚀 NexDrive Logic Started for:', url);
         const streamLinks = [];
 
         // --- Step 1: Initial Page Load ---
         const res = await axios.get(url, { headers });
         const html = res.data;
         let $ = cheerio.load(html);
-        
-        console.log('📄 Page Title:', $('title').text().trim());
 
-        // --- 🚨 HIGH ALERT DEBUGGING SYSTEM 🚨 ---
-        console.log('-------- DEBUG START --------');
+        // --- Step 2: Extract Encoded Content (Client-Side Unlock) ---
+        // Look for the script containing 'const encoded ='
+        const scriptContent = $('script:contains("const encoded =")').html();
         
-        // 1. Check if "Unlock" word exists
-        const hasUnlock = html.toLowerCase().includes('unlock');
-        console.log(`🔍 Contains "Unlock" text? ${hasUnlock ? 'YES' : 'NO'}`);
-
-        if (hasUnlock) {
-            // Find exactly which tag contains "Unlock"
-            const unlockTags = [];
-            $('*').each((i, el) => {
-                const text = $(el).text().trim();
-                const val = $(el).val();
-                if ((text === 'Unlock Download Links' || text.includes('Unlock')) && $(el).children().length === 0) {
-                    unlockTags.push({
-                        tag: el.tagName,
-                        text: text,
-                        class: $(el).attr('class'),
-                        id: $(el).attr('id'),
-                        type: $(el).attr('type'),
-                        name: $(el).attr('name'),
-                        parent: $(el).parent().prop('tagName')
-                    });
-                }
-                if (val && typeof val === 'string' && val.includes('Unlock')) {
-                     unlockTags.push({ tag: 'input/btn', type: $(el).attr('type'), name: $(el).attr('name') });
-                }
-            });
-            console.log('🔍 Unlock Elements Found:', JSON.stringify(unlockTags, null, 2));
+        if (scriptContent) {
+            console.log('🔐 Found Encoded Data. Decoding...');
+            
+            // Extract the base64 string using Regex
+            const match = scriptContent.match(/const\s+encoded\s*=\s*"([^"]+)"/);
+            
+            if (match && match[1]) {
+                const encodedData = match[1];
+                const decodedHtml = decodeBase64(encodedData);
+                
+                // Load decoded HTML into Cheerio
+                // Note: The decoded HTML contains the buttons we need
+                $ = cheerio.load(decodedHtml);
+                console.log('🔓 Decoded Successfully! Scanning for links...');
+            } else {
+                console.log('⚠️ Encoded string regex mismatch');
+            }
+        } else {
+            console.log('ℹ️ No encoded script found. Page might be unlocked or different format.');
         }
 
-        // 2. Dump all Forms and Inputs
-        const forms = $('form');
-        console.log(`🔍 Total Forms Found: ${forms.length}`);
-        
-        forms.each((i, el) => {
-            console.log(`   [Form ${i}] Action: ${$(el).attr('action')} | Method: ${$(el).attr('method')}`);
-            const inputs = $(el).find('input');
-            console.log(`   [Form ${i}] Inputs: ${inputs.length}`);
-            inputs.each((j, inp) => {
-                console.log(`      - Input: name="${$(inp).attr('name')}" value="${$(inp).attr('value')}" type="${$(inp).attr('type')}"`);
-            });
-        });
-
-        console.log('-------- DEBUG END --------');
-
-        // --- ATTEMPT RECOVERY (Blind Logic) ---
-        // Agar form detect nahi hua, tab bhi hum try karenge (Standard WP Protection Logic)
-        
-        console.log('⚠️ Attempting blind unlock...');
-        
-        const formData = new URLSearchParams();
-        let foundInputs = false;
-
-        // Try to find ANY inputs on the page, regardless of form
-        $('input').each((i, el) => {
-            const name = $(el).attr('name');
-            const value = $(el).attr('value');
-            if (name) {
-                formData.append(name, value || '');
-                foundInputs = true;
-            }
-        });
-
-        // Add typical Unlock keys manually if missing
-        if (!formData.has('unlock')) formData.append('unlock', 'Unlock Download Links');
-        
-        // Timer
-        await sleep(3500);
-
-        console.log(`🔓 Sending POST (Inputs found: ${foundInputs})...`);
-        
-        const postRes = await axios.post(url, formData, {
-            headers: {
-                ...headers,
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': url,
-                'Origin': new URL(url).origin,
-                'Cookie': res.headers['set-cookie'] ? res.headers['set-cookie'].join('; ') : ''
-            }
-        });
-
-        $ = cheerio.load(postRes.data);
-        console.log('📄 Post-Unlock Page Title:', $('title').text().trim());
-
-        // --- Step 3: Find Links ---
-        // Specific selector for the screenshot you showed
+        // --- Step 3: Find "G-Direct [Instant]" Link ---
         let fastDlLink = null;
-        
-        // Check for "G-Direct" specific text
+
         $('a').each((i, el) => {
             const text = $(el).text().trim();
             const href = $(el).attr('href');
-            if (href && (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl'))) {
-                console.log(`✅ Found Potential Link: ${text} -> ${href}`);
+            
+            if (!href || href === '#' || !href.startsWith('http')) return;
+
+            // Target "G-Direct" or "fastdl"
+            if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
                 fastDlLink = href;
+                return false; // Stop loop
             }
         });
 
         if (fastDlLink) {
-            // --- Step 4: Visit FastDL ---
-            const fastRes = await axios.get(fastDlLink, { headers: { ...headers, 'Referer': url } });
+            console.log('⚡ FastDL Link Found:', fastDlLink);
+
+            // --- Step 4: Visit FastDL Page ---
+            const fastRes = await axios.get(fastDlLink, { 
+                headers: { ...headers, 'Referer': url } 
+            });
             const $$ = cheerio.load(fastRes.data);
-            
-            const finalLink = $$('a:contains("Download Now")').attr('href') || 
-                              $$('a.btn-primary').attr('href');
+
+            // --- Step 5: Extract Final "Download Now" Link ---
+            const finalLink = $$('a.btn-primary').attr('href') || 
+                              $$('a:contains("Download Now")').attr('href') ||
+                              $$('a[href*="googleusercontent"]').attr('href');
 
             if (finalLink) {
-                streamLinks.push({ server: 'G-Direct [Instant]', link: finalLink, type: 'mkv' });
+                console.log('✅ Final Link Extracted!');
+                streamLinks.push({
+                    server: 'G-Direct [Instant]',
+                    link: finalLink,
+                    type: 'mkv'
+                });
+            } else {
+                console.log('❌ Final Download button not found on FastDL page.');
             }
+
+        } else {
+            // Fallback: Check for other links in decoded HTML
+            console.log('⚠️ G-Direct not found. Checking alternatives...');
+            $('a').each((i, el) => {
+                const href = $(el).attr('href');
+                const text = $(el).text().trim();
+                
+                if (href && (href.includes('drive.google.com') || href.includes('pixeldrain') || href.includes('gofile'))) {
+                    streamLinks.push({
+                        server: text || 'Backup Link',
+                        link: href,
+                        type: 'mkv'
+                    });
+                }
+            });
         }
 
         return streamLinks;
 
     } catch (error) {
         console.error('❌ NexDrive Error:', error.message);
-        // Log response data if available to see server error
-        if (error.response) console.log('Server Response:', error.response.status);
         return [];
     }
 }
