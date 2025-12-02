@@ -2,7 +2,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const headers = require('../headers');
 
-// Helper to simulate waiting (Timer)
+// Timer helper
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function nexdriveExtractor(url) {
@@ -11,107 +11,120 @@ async function nexdriveExtractor(url) {
         const streamLinks = [];
 
         // --- Step 1: Initial Page Load (GET) ---
-        // Cookies capture karna zaroori hai
         const res = await axios.get(url, { headers });
-        const rawCookies = res.headers['set-cookie']; // Capture Cookies
-        const cookieHeader = rawCookies ? rawCookies.map(c => c.split(';')[0]).join('; ') : '';
         
-        console.log('🍪 Cookies Captured:', cookieHeader ? 'Yes' : 'No');
+        // Capture Cookies (Very Important)
+        const rawCookies = res.headers['set-cookie'];
+        const cookieHeader = rawCookies ? rawCookies.map(c => c.split(';')[0]).join('; ') : '';
+        console.log('🍪 Cookies:', cookieHeader || 'None found (might rely on hidden inputs)');
 
         let $ = cheerio.load(res.data);
 
-        // --- Step 2: Handle Unlock Form ---
-        const form = $('form[method="POST"]'); // Usually valid form is POST
-        const unlockBtn = $('button:contains("Unlock"), input[value*="Unlock"], #btn-1');
-
+        // --- Step 2: Find & Process "Unlock" Form ---
+        // Hum saare forms check karenge
+        const form = $('form');
+        
+        // Check if we are on the locked page
         if (form.length > 0) {
-            console.log('🔐 Locked Page Detected. Parsing Form...');
-            
-            // Extract all hidden inputs required for submission
+            console.log(`🔐 Found ${form.length} form(s). Attempting unlock...`);
+
+            // Pick the first form (usually the correct one on these sites)
+            const targetForm = form.first();
+            const action = targetForm.attr('action') || url;
             const formData = new URLSearchParams();
-            $('input', form).each((i, el) => {
+
+            // A. Scrape ALL hidden inputs
+            targetForm.find('input').each((i, el) => {
                 const name = $(el).attr('name');
                 const value = $(el).attr('value');
                 if (name) formData.append(name, value || '');
             });
 
-            // Timer Wait (Simulate User)
-            console.log('⏳ Waiting 4 seconds for timer...');
-            await sleep(4500); 
+            // B. Scrape the "Unlock" Button itself (Crucial!)
+            // Server needs to know this button was "clicked"
+            const btn = targetForm.find('button[type="submit"], input[type="submit"]');
+            if (btn.length > 0) {
+                const btnName = btn.attr('name');
+                const btnValue = btn.attr('value');
+                if (btnName) {
+                    console.log(`Cx Button Found: ${btnName} = ${btnValue}`);
+                    formData.append(btnName, btnValue || '');
+                }
+            }
 
-            // Form Action (Same URL usually)
-            const action = form.attr('action') || url;
+            // C. Wait (Timer Logic)
+            console.log('⏳ Waiting 3 seconds (Simulating Timer)...');
+            await sleep(3500);
 
-            console.log('🔓 Submitting Unlock Request...');
-            
-            // --- Step 3: Submit Form (POST) with COOKIES ---
+            // D. Submit Form (POST)
+            console.log('🔓 Sending POST request...');
             const postRes = await axios.post(action, formData, {
                 headers: {
                     ...headers,
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Referer': url,
-                    'Cookie': cookieHeader, // VERY IMPORTANT
+                    'Cookie': cookieHeader,
                     'Origin': new URL(url).origin
                 }
             });
 
-            // Update Cheerio with the UNLOCKED HTML
+            // Reload cheerio with the NEW page content (Unlocked)
             $ = cheerio.load(postRes.data);
-            
-            // Debug check
-            if ($('button:contains("Unlock")').length > 0) {
-                console.log('⚠️ Warning: Still on Unlock page. Cookie/Token might be invalid.');
-            } else {
-                console.log('✅ Page Unlocked Successfully!');
-            }
+        } else {
+            console.log('ℹ️ No form found. Maybe page is already unlocked?');
         }
 
-        // --- Step 4: Find G-Direct Button ---
+        // --- Step 3: Find "G-Direct [Instant]" Link ---
         let fastDlLink = null;
+
+        // Try exact text matching from your screenshot
+        const targetText = ['G-Direct', 'Instant', 'G-Direct [Instant]'];
         
-        // Try multiple selectors for the button
         $('a').each((i, el) => {
             const text = $(el).text().trim();
             const href = $(el).attr('href');
             
-            if (!href || href === '#') return;
+            if (!href || href === '#' || !href.startsWith('http')) return;
 
-            // Target "G-Direct [Instant]"
-            if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
+            // Check if text matches our target
+            const isMatch = targetText.some(t => text.includes(t)) || href.includes('fastdl.lat');
+            
+            if (isMatch) {
                 fastDlLink = href;
-                return false; // Stop loop
+                return false; // Break loop
             }
         });
 
         if (fastDlLink) {
             console.log('⚡ FastDL Link Found:', fastDlLink);
 
-            // --- Step 5: Visit FastDL Page (Final Step) ---
+            // --- Step 4: Visit FastDL Page ---
             const fastRes = await axios.get(fastDlLink, { 
-                headers: { ...headers, 'Referer': url } 
+                headers: { ...headers, 'Referer': url } // Referer is important here
             });
             const $$ = cheerio.load(fastRes.data);
 
-            // Extract Final Google Link
-            const finalLink = $$('a.btn-primary').attr('href') || 
+            // --- Step 5: Extract Final "Download Now" Link ---
+            // Screenshot 4: "Download Now" button
+            const finalLink = $$('a.btn-primary:contains("Download Now")').attr('href') ||
                               $$('a:contains("Download Now")').attr('href') ||
-                              $$('a[href*="googleusercontent"]').attr('href');
+                              $$('a[href*="googleusercontent"]').attr('href'); // Strongest check
 
             if (finalLink) {
-                console.log('✅ Final Google Link Extracted!');
+                console.log('✅ Final Link Extracted!');
                 streamLinks.push({
                     server: 'G-Direct [Instant]',
                     link: finalLink,
                     type: 'mkv'
                 });
             } else {
-                console.log('❌ Download Now button missing on FastDL page');
+                console.log('❌ FastDL page opened, but "Download Now" link missing.');
             }
 
         } else {
-            console.log('❌ G-Direct Button not found. HTML Dump (Partial):');
-            // Log partial HTML to debug if buttons are missing
-            console.log($.html().substring(0, 500)); 
+            console.log('❌ G-Direct Button not found after unlock.');
+            // Debug: Check titles of links we DID find
+            // $('a').each((i, el) => console.log('Found Link:', $(el).text().trim()));
         }
 
         return streamLinks;
