@@ -7,12 +7,19 @@ const decode = function (value) {
     return Buffer.from(value, 'base64').toString('utf-8');
 };
 
+// Helper to clean button text
+const cleanServerName = (text) => {
+    if (!text) return 'Cloud Server';
+    // Remove "Download", "Watch", brackets [], and extra spaces
+    let clean = text.replace(/Download|Watch|Link|\[|\]/gi, '').trim();
+    // Remove starting colon if present (e.g. ": 10Gbps")
+    if (clean.startsWith(':')) clean = clean.substring(1).trim();
+    return clean || 'Cloud Server';
+};
+
 async function hubcloudExtracter(link) {
     try {
-        // Clean link (remove trailing chars like &)
-        if (link.endsWith('&')) link = link.slice(0, -1);
-
-        console.log('🚀 HubCloud/V-Cloud Logic Started for:', link);
+        console.log('🚀 HubCloud Logic Started for:', link);
         const baseUrl = link.split('/').slice(0, 3).join('/');
         let streamLinks = [];
 
@@ -32,7 +39,7 @@ async function hubcloudExtracter(link) {
             vcloudLink = `${baseUrl}${vcloudLink}`;
         }
 
-        console.log('🔄 Target Link found:', vcloudLink);
+        console.log('🔄 Target V-Cloud Link found:', vcloudLink);
 
         // --- Step 2: Fetch Target Page ---
         const vcloudRes = await axios.get(vcloudLink, {
@@ -44,21 +51,28 @@ async function hubcloudExtracter(link) {
         
         const html = vcloudRes.data;
         const $ = cheerio.load(html);
-        console.log('📄 Page Fetched. Scanning for links...');
+        console.log('📄 Page Fetched. Scanning for buttons...');
 
         const foundLinks = new Set();
+        const linkData = []; // Store link AND title
 
-        // --- METHOD A: Button Parsing ---
+        // --- METHOD A: Button Parsing (Primary) ---
         $('.btn-success, .btn-danger, .btn-secondary, a.btn, .download-link').each((i, element) => {
-            const href = $(element).attr('href');
+            const itm = $(element);
+            const href = itm.attr('href');
+            const rawText = itm.text().trim();
+            const serverName = cleanServerName(rawText);
+
             if (href && href.startsWith('http')) {
+                // Store object to keep track of name
+                linkData.push({ href, name: serverName });
                 foundLinks.add(href);
             }
         });
 
-        // --- METHOD B: Script Regex (UPDATED FOR VCLOUD) ---
-        // Added 'vcloud' to the regex
-        const regexPattern = /https?:\/\/[^"'\s<>]+(?:token=|id=|file\/|\.dev|drive|pixeldrain|boblover|hubcloud|vcloud)/gi;
+        // --- METHOD B: Script Regex (Backup) ---
+        // Only if buttons fail or for hidden links
+        const regexPattern = /https?:\/\/[^"'\s<>]+(?:token=|id=|file\/|\.dev|drive|pixeldrain|boblover|hubcloud)/gi;
         const scriptMatches = html.match(regexPattern) || [];
         
         const JUNK_DOMAINS = [
@@ -68,31 +82,32 @@ async function hubcloudExtracter(link) {
 
         scriptMatches.forEach(match => {
             let cleanLink = match.replace(/['";\)]+$/, '');
-            
             const isJunk = JUNK_DOMAINS.some(d => cleanLink.includes(d));
-            // Base URL filter ko thoda smart banaya hai
             const isBaseUrl = cleanLink === baseUrl || cleanLink === link || cleanLink === vcloudLink;
             
-            if (!isJunk && !isBaseUrl) {
+            if (!isJunk && !isBaseUrl && !foundLinks.has(cleanLink)) {
+                // Script links usually don't have text, so we give them a generic name or guess
+                let name = 'Cloud Server';
+                if(cleanLink.includes('pixeld')) name = 'PixelDrain';
+                else if(cleanLink.includes('boblover')) name = 'FSL/TRS Server';
+                
+                linkData.push({ href: cleanLink, name: name });
                 foundLinks.add(cleanLink);
             }
         });
 
-        console.log(`🔍 Total unique potential links found: ${foundLinks.size}`);
+        console.log(`🔍 Total unique links to process: ${linkData.length}`);
 
         // --- Step 3: Process & Resolve ---
-        const processingPromises = Array.from(foundLinks).map(async (rawLink) => {
+        const processingPromises = linkData.map(async (item) => {
+            const rawLink = item.href;
+            let serverName = item.name;
+
             try {
                 if (JUNK_DOMAINS.some(d => rawLink.includes(d))) return;
 
-                let serverName = 'Cloud Server';
-                if (rawLink.includes('boblover')) serverName = 'FSL/TRS Server';
-                else if (rawLink.includes('pixeld')) serverName = 'Pixeldrain';
-                else if (rawLink.includes('worker')) serverName = 'CF Worker';
-
-                // --- Resolution Logic (UPDATED) ---
-                // Added 'vcloud' check here too
-                if (rawLink.includes('boblover') || rawLink.includes('hubcloud') || rawLink.includes('vcloud') || rawLink.includes('/?id=')) {
+                // --- Resolution Logic ---
+                if (rawLink.includes('boblover') || rawLink.includes('hubcloud') || rawLink.includes('/?id=')) {
                     
                     const newLinkRes = await axios.head(rawLink, { 
                         headers: { ...headers, 'Referer': vcloudLink },
@@ -106,9 +121,13 @@ async function hubcloudExtracter(link) {
 
                     if (nestedLink.includes('t.me') || nestedLink === vcloudLink) return;
 
-                    if (nestedLink.includes('pixeld')) serverName = 'Pixeldrain';
-                    else if (nestedLink.includes('workers')) serverName = 'CF Worker';
+                    // Rename ONLY if generic, otherwise keep button text
+                    if (serverName === 'Cloud Server') {
+                        if (nestedLink.includes('pixeld')) serverName = 'Pixeldrain';
+                        else if (nestedLink.includes('workers')) serverName = 'CF Worker';
+                    }
 
+                    // Pixeldrain Fix
                     if (nestedLink.includes('pixeld') && !nestedLink.includes('api')) {
                         const token = nestedLink.split('/').pop();
                         nestedLink = `https://pixeldrain.com/api/file/${token}?download`;
@@ -117,26 +136,38 @@ async function hubcloudExtracter(link) {
                     streamLinks.push({ server: serverName, link: nestedLink, type: 'mkv' });
 
                 } else {
+                    // Direct links handling
                     if (rawLink.includes('pixeld')) {
                          if (!rawLink.includes('api')) {
                             const token = rawLink.split('/').pop();
                             const pdBase = rawLink.split('/').slice(0, -2).join('/');
                             rawLink = `${pdBase}/api/file/${token}?download`;
                         }
-                        serverName = 'Pixeldrain';
+                        // Only override if name is generic, otherwise keep "PixelServer : 2" etc.
+                        if(serverName === 'Cloud Server') serverName = 'Pixeldrain';
                     }
+                    
                     streamLinks.push({ server: serverName, link: rawLink, type: 'mkv' });
                 }
 
             } catch (error) {
-                // Silent error
+                // console.log(`⚠️ Link failed: ${rawLink}`);
             }
         });
 
         await Promise.all(processingPromises);
 
+        // --- Step 4: Final Cleanup ---
         const uniqueStreams = [];
         const seenUrls = new Set();
+
+        // Sort priority: Put FSL/TRS/Pixel first, generic last (Optional)
+        streamLinks.sort((a, b) => {
+            const priority = ['FSL', 'TRS', 'Pixel', '10Gbps'];
+            const aP = priority.findIndex(p => a.server.includes(p));
+            const bP = priority.findIndex(p => b.server.includes(p));
+            return (bP === -1 ? 0 : bP) - (aP === -1 ? 0 : aP); // Higher priority first
+        });
 
         streamLinks.forEach(item => {
             if (
@@ -144,8 +175,7 @@ async function hubcloudExtracter(link) {
                 item.link.startsWith('http') && 
                 !seenUrls.has(item.link) &&
                 !item.link.includes('t.me') &&
-                !item.link.includes('hubcloud.foo/drive') &&
-                !item.link.includes('vcloud.zip/drive') // Added vcloud filter
+                !item.link.includes('hubcloud.foo/drive')
             ) {
                 seenUrls.add(item.link);
                 uniqueStreams.push(item);
