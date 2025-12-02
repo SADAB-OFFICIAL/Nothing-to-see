@@ -42,18 +42,14 @@ async function nexdriveExtractor(url) {
             
             if (!href || href === '#' || !href.startsWith('http')) return;
 
-            // === A. G-Direct Processing (Working) ===
+            // === A. G-Direct Processing (Already Working) ===
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
                 const p = (async () => {
                     console.log('⚡ [DEBUG] Found G-Direct:', href);
                     try {
-                        const fastRes = await axios.get(href, { 
-                            headers: { ...headers, 'Referer': url } 
-                        });
+                        const fastRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
                         const $$ = cheerio.load(fastRes.data);
-                        const finalLink = $$('a.btn-primary').attr('href') || 
-                                          $$('a:contains("Download Now")').attr('href') ||
-                                          $$('a[href*="googleusercontent"]').attr('href');
+                        const finalLink = $$('a.btn-primary').attr('href') || $$('a:contains("Download Now")').attr('href');
                         
                         if (finalLink) {
                             streamLinks.push({ server: 'G-Direct [Instant]', link: finalLink, type: 'mkv' });
@@ -63,46 +59,37 @@ async function nexdriveExtractor(url) {
                 promises.push(p);
             }
 
-            // === B. M-Cloud Processing (The Problem Area) ===
+            // === B. M-Cloud Processing (FIXED LOGIC) ===
             if (text.includes('M-Cloud') || href.includes('mcloud.mom')) {
                 const p = (async () => {
                     console.log('☁️ [DEBUG] Found M-Cloud Link:', href);
                     try {
                         // 1. Visit M-Cloud Page
-                        console.log('⏳ [DEBUG] Visiting M-Cloud Page...');
                         const mRes = await axios.get(href, { headers });
                         const mHtml = mRes.data;
                         const $m = cheerio.load(mHtml);
                         
-                        // DEBUG: Check what we loaded
-                        const pageTitle = $m('title').text().trim();
-                        console.log('📄 [DEBUG] M-Cloud Page Title:', pageTitle);
-
-                        // 2. Find Form
-                        const form = $m('form');
-                        console.log(`🔍 [DEBUG] Forms found on M-Cloud: ${form.length}`);
-
-                        if (form.length === 0) {
-                            console.log('❌ [DEBUG] No Form Found! HTML Dump (First 500 chars):');
-                            console.log(mHtml.substring(0, 500));
-                            return;
-                        }
-
+                        // 2. Find Inputs (Without relying on <form> tag)
                         const formData = new URLSearchParams();
+                        let inputCount = 0;
+
                         $m('input').each((j, inp) => {
                             const name = $m(inp).attr('name');
                             const val = $m(inp).attr('value');
                             if(name) {
                                 formData.append(name, val || '');
-                                console.log(`   [Input] ${name} = ${val}`);
+                                inputCount++;
                             }
                         });
 
-                        console.log('⏳ [DEBUG] Waiting 4 seconds (Timer)...');
-                        await sleep(4000); 
+                        console.log(`🔍 [DEBUG] M-Cloud Inputs Found: ${inputCount}`);
 
-                        // 3. Submit Form
-                        console.log('🚀 [DEBUG] Submitting M-Cloud POST...');
+                        // Wait Timer
+                        console.log('⏳ [DEBUG] Waiting 3.5s for M-Cloud Timer...');
+                        await sleep(3500); 
+
+                        // 3. Submit POST (Generate Link)
+                        // Note: Using current URL (href) as action
                         const mPostRes = await axios.post(href, formData, {
                             headers: {
                                 ...headers,
@@ -112,31 +99,31 @@ async function nexdriveExtractor(url) {
                             }
                         });
 
-                        const finalHtml = mPostRes.data;
-                        const $f = cheerio.load(finalHtml);
                         const finalUrl = mPostRes.request.res.responseUrl; 
-                        
                         console.log('✅ [DEBUG] M-Cloud Post Success. Landed on:', finalUrl);
                         
-                        // DEBUG: Check title of landed page
-                        console.log('📄 [DEBUG] Landed Page Title:', $f('title').text().trim());
-
-                        // 4. Extract Links
+                        // 4. Parse GamerXYT Page (The Landing Page)
+                        const $f = cheerio.load(mPostRes.data);
+                        
+                        // Get all potential download buttons
                         const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
-                        console.log(`🔍 [DEBUG] Buttons found on final page: ${finalButtons.length}`);
-
                         const innerPromises = [];
+
                         finalButtons.each((k, btn) => {
                             const bLink = $f(btn).attr('href');
                             let bText = $f(btn).text().trim();
                             
-                            console.log(`   ➡️ Button found: "${bText}" -> ${bLink}`);
+                            // Clean Server Name
+                            bText = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim();
+                            if(!bText) bText = 'Cloud Server';
 
                             if (bLink && bLink.startsWith('http')) {
                                 innerPromises.push((async () => {
-                                    // Helper for nested resolution (Boblover/Hubcloud)
+                                    let finalLink = bLink;
+                                    let serverName = bText;
+
+                                    // Resolve Redirects (Boblover/Hubcloud/Vcloud)
                                     if (bLink.includes('boblover') || bLink.includes('hubcloud') || bLink.includes('vcloud')) {
-                                        console.log(`      ↳ Resolving redirect for: ${bText}`);
                                         try {
                                             const headRes = await axios.head(bLink, { 
                                                 headers: { ...headers, 'Referer': finalUrl },
@@ -144,34 +131,23 @@ async function nexdriveExtractor(url) {
                                                 validateStatus: (s) => s < 400
                                             });
                                             const resolved = headRes.request.res.responseUrl || bLink;
-                                            
-                                            // Extract nested link param if exists
-                                            let cleanUrl = resolved.split('link=')?.[1] || resolved;
-                                            try { cleanUrl = decodeURIComponent(cleanUrl); } catch(e){}
-                                            
-                                            console.log(`      ✅ Resolved to: ${cleanUrl}`);
-                                            
-                                            let serverName = bText.replace(/Download|\[|\]/g, '').trim() || 'M-Cloud Server';
-                                            if (cleanUrl.includes('pixeld')) serverName = 'PixelDrain';
+                                            finalLink = resolved.split('link=')?.[1] || resolved;
+                                            try { finalLink = decodeURIComponent(finalLink); } catch(e){}
+                                        } catch (e) {}
+                                    }
 
-                                            if (cleanUrl.includes('pixeld') && !cleanUrl.includes('api')) {
-                                                const id = cleanUrl.split('/').pop();
-                                                cleanUrl = `https://pixeldrain.com/api/file/${id}?download`;
-                                            }
-
-                                            streamLinks.push({ server: serverName, link: cleanUrl, type: 'mkv' });
-                                        } catch (e) { console.log(`      ❌ Resolve failed: ${e.message}`); }
-                                    } 
-                                    // Direct Links (PixelServer etc)
-                                    else {
-                                        let serverName = bText.replace(/Download|\[|\]/g, '').trim() || 'M-Cloud Server';
-                                        if (bLink.includes('pixeld')) {
-                                            const id = bLink.split('/').pop();
-                                            const pdLink = `https://pixeldrain.com/api/file/${id}?download`;
-                                            streamLinks.push({ server: 'PixelDrain', link: pdLink, type: 'mkv' });
-                                        } else {
-                                            streamLinks.push({ server: serverName, link: bLink, type: 'mkv' });
+                                    // Fix PixelDrain Links
+                                    if (finalLink.includes('pixeld')) {
+                                        serverName = 'PixelDrain';
+                                        if (!finalLink.includes('api')) {
+                                            const id = finalLink.split('/').pop();
+                                            finalLink = `https://pixeldrain.com/api/file/${id}?download`;
                                         }
+                                    }
+
+                                    // Filter Junk
+                                    if (!finalLink.includes('t.me') && !finalLink.includes('telegram')) {
+                                        streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
                                     }
                                 })());
                             }
@@ -181,7 +157,6 @@ async function nexdriveExtractor(url) {
 
                     } catch (e) {
                         console.log('❌ M-Cloud Critical Error:', e.message);
-                        if (e.response) console.log('   Status Code:', e.response.status);
                     }
                 })();
                 promises.push(p);
