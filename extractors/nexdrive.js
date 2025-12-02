@@ -42,14 +42,17 @@ async function nexdriveExtractor(url) {
             
             if (!href || href === '#' || !href.startsWith('http')) return;
 
-            // === A. G-Direct Processing (Already Working) ===
+            // === A. G-Direct Processing ===
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
                 const p = (async () => {
                     console.log('⚡ [DEBUG] Found G-Direct:', href);
                     try {
-                        const fastRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
+                        const fastRes = await axios.get(href, { 
+                            headers: { ...headers, 'Referer': url } 
+                        });
                         const $$ = cheerio.load(fastRes.data);
-                        const finalLink = $$('a.btn-primary').attr('href') || $$('a:contains("Download Now")').attr('href');
+                        const finalLink = $$('a.btn-primary').attr('href') || 
+                                          $$('a:contains("Download Now")').attr('href');
                         
                         if (finalLink) {
                             streamLinks.push({ server: 'G-Direct [Instant]', link: finalLink, type: 'mkv' });
@@ -59,101 +62,122 @@ async function nexdriveExtractor(url) {
                 promises.push(p);
             }
 
-            // === B. M-Cloud Processing (FIXED LOGIC) ===
+            // === B. M-Cloud Processing (ADVANCED FIX) ===
             if (text.includes('M-Cloud') || href.includes('mcloud.mom')) {
                 const p = (async () => {
                     console.log('☁️ [DEBUG] Found M-Cloud Link:', href);
                     try {
-                        // 1. Visit M-Cloud Page
-                        const mRes = await axios.get(href, { headers });
-                        const mHtml = mRes.data;
-                        const $m = cheerio.load(mHtml);
+                        // 1. Initial GET to set cookies and get form data
+                        const mRes = await axios.get(href, { 
+                            headers: { 
+                                ...headers, 
+                                'Referer': url // Important for M-Cloud to trust us
+                            } 
+                        });
                         
-                        // 2. Find Inputs (Without relying on <form> tag)
+                        // Capture Cookies
+                        const rawCookies = mRes.headers['set-cookie'];
+                        const cookieHeader = rawCookies ? rawCookies.map(c => c.split(';')[0]).join('; ') : '';
+                        const mHtml = mRes.data;
+
+                        // 2. Regex Input Extraction (More robust than Cheerio)
                         const formData = new URLSearchParams();
                         let inputCount = 0;
+                        
+                        // Finds all <input name="..." value="..."> even if malformed
+                        const inputRegex = /<input[^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']/g;
+                        let match;
+                        while ((match = inputRegex.exec(mHtml)) !== null) {
+                            formData.append(match[1], match[2]);
+                            inputCount++;
+                        }
 
-                        $m('input').each((j, inp) => {
-                            const name = $m(inp).attr('name');
-                            const val = $m(inp).attr('value');
-                            if(name) {
-                                formData.append(name, val || '');
-                                inputCount++;
-                            }
-                        });
+                        // Fallback: Try parsing via Cheerio if regex missed something
+                        if (inputCount === 0) {
+                            const $m = cheerio.load(mHtml);
+                            $m('input').each((j, inp) => {
+                                const name = $m(inp).attr('name');
+                                const val = $m(inp).attr('value');
+                                if(name) {
+                                    formData.append(name, val || '');
+                                    inputCount++;
+                                }
+                            });
+                        }
 
                         console.log(`🔍 [DEBUG] M-Cloud Inputs Found: ${inputCount}`);
 
-                        // Wait Timer
-                        console.log('⏳ [DEBUG] Waiting 3.5s for M-Cloud Timer...');
-                        await sleep(3500); 
+                        if (inputCount > 0) {
+                            console.log('⏳ [DEBUG] Waiting 3.5s for M-Cloud Timer...');
+                            await sleep(3500);
 
-                        // 3. Submit POST (Generate Link)
-                        // Note: Using current URL (href) as action
-                        const mPostRes = await axios.post(href, formData, {
-                            headers: {
-                                ...headers,
-                                'Content-Type': 'application/x-www-form-urlencoded',
-                                'Referer': href,
-                                'Origin': new URL(href).origin
-                            }
-                        });
+                            // 3. POST Request (Simulate "Generate Link" click)
+                            const mPostRes = await axios.post(href, formData, {
+                                headers: {
+                                    ...headers,
+                                    'Content-Type': 'application/x-www-form-urlencoded',
+                                    'Referer': href,
+                                    'Origin': new URL(href).origin,
+                                    'Cookie': cookieHeader // Pass cookies back
+                                },
+                                maxRedirects: 5
+                            });
 
-                        const finalUrl = mPostRes.request.res.responseUrl; 
-                        console.log('✅ [DEBUG] M-Cloud Post Success. Landed on:', finalUrl);
-                        
-                        // 4. Parse GamerXYT Page (The Landing Page)
-                        const $f = cheerio.load(mPostRes.data);
-                        
-                        // Get all potential download buttons
-                        const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
-                        const innerPromises = [];
-
-                        finalButtons.each((k, btn) => {
-                            const bLink = $f(btn).attr('href');
-                            let bText = $f(btn).text().trim();
+                            const finalUrl = mPostRes.request.res.responseUrl;
+                            console.log('✅ [DEBUG] M-Cloud Post Success. Landed on:', finalUrl);
                             
-                            // Clean Server Name
-                            bText = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim();
-                            if(!bText) bText = 'Cloud Server';
+                            // 4. Parse Final Page (GamerXYT)
+                            const $f = cheerio.load(mPostRes.data);
+                            
+                            // Scan for buttons like FSL, PixelServer, TRS
+                            const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
+                            
+                            const innerPromises = [];
+                            finalButtons.each((k, btn) => {
+                                const bLink = $f(btn).attr('href');
+                                let bText = $f(btn).text().trim();
+                                
+                                if (bLink && bLink.startsWith('http')) {
+                                    innerPromises.push((async () => {
+                                        // Clean Name
+                                        bText = bText.replace(/Download|\[|\]/g, '').trim() || 'M-Cloud Server';
+                                        let finalLink = bLink;
 
-                            if (bLink && bLink.startsWith('http')) {
-                                innerPromises.push((async () => {
-                                    let finalLink = bLink;
-                                    let serverName = bText;
-
-                                    // Resolve Redirects (Boblover/Hubcloud/Vcloud)
-                                    if (bLink.includes('boblover') || bLink.includes('hubcloud') || bLink.includes('vcloud')) {
-                                        try {
-                                            const headRes = await axios.head(bLink, { 
-                                                headers: { ...headers, 'Referer': finalUrl },
-                                                maxRedirects: 5,
-                                                validateStatus: (s) => s < 400
-                                            });
-                                            const resolved = headRes.request.res.responseUrl || bLink;
-                                            finalLink = resolved.split('link=')?.[1] || resolved;
-                                            try { finalLink = decodeURIComponent(finalLink); } catch(e){}
-                                        } catch (e) {}
-                                    }
-
-                                    // Fix PixelDrain Links
-                                    if (finalLink.includes('pixeld')) {
-                                        serverName = 'PixelDrain';
-                                        if (!finalLink.includes('api')) {
-                                            const id = finalLink.split('/').pop();
-                                            finalLink = `https://pixeldrain.com/api/file/${id}?download`;
+                                        // Resolve Redirects (Boblover/Hubcloud)
+                                        if (bLink.includes('boblover') || bLink.includes('hubcloud') || bLink.includes('vcloud')) {
+                                            try {
+                                                const headRes = await axios.head(bLink, { 
+                                                    headers: { ...headers, 'Referer': finalUrl },
+                                                    maxRedirects: 5,
+                                                    validateStatus: (s) => s < 400
+                                                });
+                                                const resolved = headRes.request.res.responseUrl || bLink;
+                                                finalLink = resolved.split('link=')?.[1] || resolved;
+                                                try { finalLink = decodeURIComponent(finalLink); } catch(e){}
+                                            } catch (e) {}
                                         }
-                                    }
 
-                                    // Filter Junk
-                                    if (!finalLink.includes('t.me') && !finalLink.includes('telegram')) {
-                                        streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
-                                    }
-                                })());
-                            }
-                        });
-                        
-                        await Promise.all(innerPromises);
+                                        // Fix PixelDrain
+                                        if (finalLink.includes('pixeld')) {
+                                            bText = 'PixelDrain';
+                                            const id = finalLink.split('/').pop();
+                                            // Ensure it's an API link
+                                            if (!finalLink.includes('api')) {
+                                                finalLink = `https://pixeldrain.com/api/file/${id}?download`;
+                                            }
+                                        }
+
+                                        if (!finalLink.includes('t.me')) {
+                                            streamLinks.push({ server: bText, link: finalLink, type: 'mkv' });
+                                        }
+                                    })());
+                                }
+                            });
+                            await Promise.all(innerPromises);
+                        } else {
+                            // Debugging: If inputs are still 0, dump HTML to see if Cloudflare blocked us
+                            console.log('❌ [DEBUG] No Inputs Found on M-Cloud. HTML Dump:', mHtml.substring(0, 200));
+                        }
 
                     } catch (e) {
                         console.log('❌ M-Cloud Critical Error:', e.message);
