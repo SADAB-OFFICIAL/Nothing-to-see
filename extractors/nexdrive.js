@@ -14,7 +14,7 @@ const decodeBase64 = (str) => {
 
 async function nexdriveExtractor(url) {
     try {
-        console.log('🚀 [DEBUG] NexDrive Logic Started for:', url);
+        console.log('🚀 NexDrive Logic Started for:', url);
         const streamLinks = [];
 
         // --- Step 1: Initial Page Load ---
@@ -28,6 +28,7 @@ async function nexdriveExtractor(url) {
             if (match && match[1]) {
                 const decodedHtml = decodeBase64(match[1]);
                 $ = cheerio.load(decodedHtml);
+                console.log('🔓 Decoded Successfully!');
             }
         }
 
@@ -43,6 +44,7 @@ async function nexdriveExtractor(url) {
             // === A. G-Direct Processing ===
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
                 const p = (async () => {
+                    console.log('⚡ Found G-Direct:', href);
                     try {
                         const fastRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
                         const $$ = cheerio.load(fastRes.data);
@@ -57,45 +59,43 @@ async function nexdriveExtractor(url) {
                 promises.push(p);
             }
 
-            // === B. M-Cloud Processing (With HubCDN Fix) ===
+            // === B. M-Cloud Processing (FIXED) ===
             if (text.includes('M-Cloud') || href.includes('mcloud.mom')) {
                 const p = (async () => {
                     console.log('☁️ Found M-Cloud Link:', href);
                     try {
                         // 1. Visit M-Cloud Page
-                        const mRes = await axios.get(href, { headers });
+                        const mRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
                         const mHtml = mRes.data;
-                        const $m = cheerio.load(mHtml);
                         
-                        // 2. Find Inputs & Submit Form
-                        const formData = new URLSearchParams();
-                        let inputCount = 0;
-                        const inputRegex = /<input[^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']/g;
-                        let match;
-                        while ((match = inputRegex.exec(mHtml)) !== null) {
-                            formData.append(match[1], match[2]);
-                            inputCount++;
+                        // 2. Extract Redirect URL from Scripts (The Magic Fix ✨)
+                        // Dhoondo: var url = 'https://...' OR window.location = '...'
+                        let finalUrl = null;
+                        const scriptMatch = mHtml.match(/var\s+url\s*=\s*['"]([^'"]+)['"]/) || 
+                                            mHtml.match(/window\.open\(['"]([^'"]+)['"]\)/) ||
+                                            mHtml.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
+
+                        if (scriptMatch && scriptMatch[1]) {
+                            finalUrl = scriptMatch[1];
+                            console.log('✅ Extracted M-Cloud Redirect URL:', finalUrl);
+                        } else {
+                            // Fallback: Check for Form (Rare case now)
+                            const $m = cheerio.load(mHtml);
+                            if ($m('form').length > 0) {
+                                // ... Old form logic if needed, but Script Match usually works ...
+                                console.log('⚠️ Script match failed. Checking for form...');
+                            } else {
+                                console.log('❌ Could not extract link from M-Cloud script.');
+                                return; 
+                            }
                         }
 
-                        if (inputCount > 0) {
-                            await sleep(3500); // Wait for timer
-
-                            const mPostRes = await axios.post(href, formData, {
-                                headers: {
-                                    ...headers,
-                                    'Content-Type': 'application/x-www-form-urlencoded',
-                                    'Referer': href,
-                                    'Origin': new URL(href).origin,
-                                    'Cookie': mRes.headers['set-cookie'] ? mRes.headers['set-cookie'].join('; ') : ''
-                                },
-                                maxRedirects: 5
-                            });
-
-                            const finalUrl = mPostRes.request.res.responseUrl; 
-                            console.log('✅ M-Cloud unlocked. Parsing GamerXYT...');
+                        if (finalUrl) {
+                            // 3. Visit GamerXYT Page (Final Page)
+                            const finalRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
+                            const $f = cheerio.load(finalRes.data);
                             
-                            // 4. Extract Links from GamerXYT
-                            const $f = cheerio.load(mPostRes.data);
+                            // 4. Extract Links (FSL, Pixel, etc.)
                             const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
                             const innerPromises = [];
 
@@ -105,46 +105,11 @@ async function nexdriveExtractor(url) {
                                 
                                 if (bLink && bLink.startsWith('http')) {
                                     innerPromises.push((async () => {
-                                        let serverName = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim() || 'Cloud Server';
+                                        bText = bText.replace(/Download|\[|\]/g, '').trim() || 'M-Cloud Server';
                                         let finalLink = bLink;
 
-                                        // --- FIX: HubCDN / 10Gbps Extraction ---
-                                        if (bLink.includes('hubcdn.fans') || bLink.includes('carnewz')) {
-                                            console.log(`🔍 Processing 10Gbps/HubCDN: ${bLink}`);
-                                            try {
-                                                // Visit HubCDN Link
-                                                const hubRes = await axios.get(bLink, { 
-                                                    headers: { ...headers, 'Referer': finalUrl },
-                                                    maxRedirects: 5 // Follow redirects to carnewz.site
-                                                });
-                                                
-                                                const hubHtml = hubRes.data;
-                                                const hubFinalUrl = hubRes.request.res.responseUrl;
-
-                                                // Strategy 1: URL Param (?url=...)
-                                                if (hubFinalUrl.includes('?url=')) {
-                                                    finalLink = decodeURIComponent(hubFinalUrl.split('?url=')[1].split('&')[0]);
-                                                } 
-                                                // Strategy 2: Script Extraction (window.location)
-                                                else {
-                                                    const scriptLink = hubHtml.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) || 
-                                                                       hubHtml.match(/location\.replace\(['"]([^'"]+)['"]\)/);
-                                                    if (scriptLink && scriptLink[1]) {
-                                                        finalLink = scriptLink[1];
-                                                    }
-                                                }
-                                                
-                                                if (finalLink !== bLink) {
-                                                    console.log(`✅ 10Gbps Extracted: ${finalLink}`);
-                                                    serverName = 'Server: 10Gbps (Direct)';
-                                                }
-                                            } catch (hErr) {
-                                                console.log('❌ HubCDN Extract Error:', hErr.message);
-                                            }
-                                        }
-
-                                        // --- Existing Redirect Resolvers ---
-                                        else if (bLink.includes('boblover') || bLink.includes('hubcloud') || bLink.includes('vcloud')) {
+                                        // Resolve Redirects
+                                        if (bLink.includes('boblover') || bLink.includes('hubcloud') || bLink.includes('vcloud')) {
                                             try {
                                                 const headRes = await axios.head(bLink, { 
                                                     headers: { ...headers, 'Referer': finalUrl },
@@ -157,9 +122,9 @@ async function nexdriveExtractor(url) {
                                             } catch (e) {}
                                         }
 
-                                        // PixelDrain Formatting
+                                        // PixelDrain
                                         if (finalLink.includes('pixeld')) {
-                                            serverName = 'PixelDrain';
+                                            bText = 'PixelDrain';
                                             if (!finalLink.includes('api')) {
                                                 const id = finalLink.split('/').pop();
                                                 finalLink = `https://pixeldrain.com/api/file/${id}?download`;
@@ -167,7 +132,7 @@ async function nexdriveExtractor(url) {
                                         }
 
                                         if (!finalLink.includes('t.me')) {
-                                            streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
+                                            streamLinks.push({ server: bText, link: finalLink, type: 'mkv' });
                                         }
                                     })());
                                 }
