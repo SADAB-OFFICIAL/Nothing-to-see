@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 
 // 🔒 SECURITY: Apni Secret Key yahan set karo
 // Request karte waqt url me ?key=MY_SUPER_SECRET_KEY lagana padega
-const API_SECRET = process.env.API_KEY || "MY_SUPER_SECRET_KEY"; 
+const API_SECRET = process.env.API_KEY || "sadabefy"; 
 
 // 🚀 CACHING: Data 10 minute (600 seconds) tak save rahega
 const cache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
@@ -28,7 +28,7 @@ const authenticate = (req, res, next) => {
     if (!userKey || userKey !== API_SECRET) {
         return res.status(401).json({ 
             error: 'Unauthorized', 
-            message: 'Invalid or missing API Key. Usage: /route?url=...&key=YOUR_KEY' 
+            message: 'Invalid or missing API Key. FUCK OFF 🦍🗿' 
         });
     }
     next();
