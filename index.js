@@ -80,7 +80,7 @@ app.get('/', (req, res) => {
         status: 'Online 🟢',
         security: 'Enabled 🔒',
         message: 'Universal Extractor API is running.',
-        D.M.IN.TG: `@SADAB_MOD_OWNER`
+        DMonTG: `@SADAB_MOD_OWNER`
     });
 });
 
