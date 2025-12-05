@@ -80,7 +80,7 @@ app.get('/', (req, res) => {
         status: 'Online 🟢',
         security: 'Enabled 🔒',
         message: 'Universal Extractor API is running.',
-        usage: `/hubcloud?key=${API_SECRET}&url=LINK`
+        D.M,TG: `@SADAB_MOD_OWNER`
     });
 });
 
