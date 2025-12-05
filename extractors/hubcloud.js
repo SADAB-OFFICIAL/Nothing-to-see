@@ -10,9 +10,7 @@ const decode = function (value) {
 // Helper to clean button text
 const cleanServerName = (text) => {
     if (!text) return 'Cloud Server';
-    // Remove "Download", "Watch", brackets [], and extra spaces
     let clean = text.replace(/Download|Watch|Link|\[|\]/gi, '').trim();
-    // Remove starting colon if present (e.g. ": 10Gbps")
     if (clean.startsWith(':')) clean = clean.substring(1).trim();
     return clean || 'Cloud Server';
 };
@@ -21,7 +19,8 @@ async function hubcloudExtracter(link) {
     try {
         console.log('🚀 HubCloud Logic Started for:', link);
         const baseUrl = link.split('/').slice(0, 3).join('/');
-        let streamLinks = [];
+        const streamLinks = [];
+        let finalTitle = "Unknown Title"; // Default
 
         // --- Step 1: Get Landing Page ---
         const vLinkRes = await axios.get(link, { headers });
@@ -43,20 +42,30 @@ async function hubcloudExtracter(link) {
 
         // --- Step 2: Fetch Target Page ---
         const vcloudRes = await axios.get(vcloudLink, {
-            headers: {
-                ...headers,
-                'Referer': link
-            }
+            headers: { ...headers, 'Referer': link }
         });
         
         const html = vcloudRes.data;
         const $ = cheerio.load(html);
-        console.log('📄 Page Fetched. Scanning for buttons...');
+        
+        // --- 🆕 TITLE SCRAPING ---
+        // HubCloud/VCloud headers usually contain the title
+        const scrapedTitle = $('.card-header, .panel-heading, .alert-primary').first().text().trim();
+        
+        if (scrapedTitle) {
+            // Clean up filename extensions if present
+            finalTitle = scrapedTitle.replace(/\.mkv|\.mp4/gi, '').trim();
+        } else {
+            const pageTitle = $('title').text().trim();
+            finalTitle = pageTitle.replace('HubCloud - ', '').replace('HubCloud', '').trim();
+        }
 
+        console.log('🎬 Extracted Title:', finalTitle);
+
+        // --- Step 3: Parse Buttons ---
+        const linkData = [];
         const foundLinks = new Set();
-        const linkData = []; // Store link AND title
 
-        // --- METHOD A: Button Parsing (Primary) ---
         $('.btn-success, .btn-danger, .btn-secondary, a.btn, .download-link').each((i, element) => {
             const itm = $(element);
             const href = itm.attr('href');
@@ -64,21 +73,15 @@ async function hubcloudExtracter(link) {
             const serverName = cleanServerName(rawText);
 
             if (href && href.startsWith('http')) {
-                // Store object to keep track of name
                 linkData.push({ href, name: serverName });
                 foundLinks.add(href);
             }
         });
 
-        // --- METHOD B: Script Regex (Backup) ---
-        // Only if buttons fail or for hidden links
+        // Script Regex (Backup)
         const regexPattern = /https?:\/\/[^"'\s<>]+(?:token=|id=|file\/|\.dev|drive|pixeldrain|boblover|hubcloud)/gi;
         const scriptMatches = html.match(regexPattern) || [];
-        
-        const JUNK_DOMAINS = [
-            't.me', 'telegram', 'facebook', 'instagram', 'twitter', 'whatsapp', 'discord', 
-            'wp-content', 'wp-includes', 'pixel.wp.com', 'google.com/search'
-        ];
+        const JUNK_DOMAINS = ['t.me', 'telegram', 'facebook', 'twitter', 'whatsapp', 'google.com/search'];
 
         scriptMatches.forEach(match => {
             let cleanLink = match.replace(/['";\)]+$/, '');
@@ -86,7 +89,6 @@ async function hubcloudExtracter(link) {
             const isBaseUrl = cleanLink === baseUrl || cleanLink === link || cleanLink === vcloudLink;
             
             if (!isJunk && !isBaseUrl && !foundLinks.has(cleanLink)) {
-                // Script links usually don't have text, so we give them a generic name or guess
                 let name = 'Cloud Server';
                 if(cleanLink.includes('pixeld')) name = 'PixelDrain';
                 else if(cleanLink.includes('boblover')) name = 'FSL/TRS Server';
@@ -96,9 +98,7 @@ async function hubcloudExtracter(link) {
             }
         });
 
-        console.log(`🔍 Total unique links to process: ${linkData.length}`);
-
-        // --- Step 3: Process & Resolve ---
+        // --- Step 4: Resolve Links ---
         const processingPromises = linkData.map(async (item) => {
             const rawLink = item.href;
             let serverName = item.name;
@@ -106,9 +106,7 @@ async function hubcloudExtracter(link) {
             try {
                 if (JUNK_DOMAINS.some(d => rawLink.includes(d))) return;
 
-                // --- Resolution Logic ---
                 if (rawLink.includes('boblover') || rawLink.includes('hubcloud') || rawLink.includes('/?id=')) {
-                    
                     const newLinkRes = await axios.head(rawLink, { 
                         headers: { ...headers, 'Referer': vcloudLink },
                         maxRedirects: 5,
@@ -121,13 +119,11 @@ async function hubcloudExtracter(link) {
 
                     if (nestedLink.includes('t.me') || nestedLink === vcloudLink) return;
 
-                    // Rename ONLY if generic, otherwise keep button text
                     if (serverName === 'Cloud Server') {
-                        if (nestedLink.includes('pixeld')) serverName = 'Pixeldrain';
+                        if (nestedLink.includes('pixeld')) serverName = 'PixelDrain';
                         else if (nestedLink.includes('workers')) serverName = 'CF Worker';
                     }
 
-                    // Pixeldrain Fix
                     if (nestedLink.includes('pixeld') && !nestedLink.includes('api')) {
                         const token = nestedLink.split('/').pop();
                         nestedLink = `https://pixeldrain.com/api/file/${token}?download`;
@@ -136,57 +132,34 @@ async function hubcloudExtracter(link) {
                     streamLinks.push({ server: serverName, link: nestedLink, type: 'mkv' });
 
                 } else {
-                    // Direct links handling
                     if (rawLink.includes('pixeld')) {
                          if (!rawLink.includes('api')) {
                             const token = rawLink.split('/').pop();
                             const pdBase = rawLink.split('/').slice(0, -2).join('/');
                             rawLink = `${pdBase}/api/file/${token}?download`;
                         }
-                        // Only override if name is generic, otherwise keep "PixelServer : 2" etc.
                         if(serverName === 'Cloud Server') serverName = 'Pixeldrain';
                     }
-                    
                     streamLinks.push({ server: serverName, link: rawLink, type: 'mkv' });
                 }
-
-            } catch (error) {
-                // console.log(`⚠️ Link failed: ${rawLink}`);
-            }
+            } catch (error) {}
         });
 
         await Promise.all(processingPromises);
 
-        // --- Step 4: Final Cleanup ---
-        const uniqueStreams = [];
-        const seenUrls = new Set();
+        // Deduplicate
+        const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
+            .map(link => streamLinks.find(a => a.link === link));
 
-        // Sort priority: Put FSL/TRS/Pixel first, generic last (Optional)
-        streamLinks.sort((a, b) => {
-            const priority = ['FSL', 'TRS', 'Pixel', '10Gbps'];
-            const aP = priority.findIndex(p => a.server.includes(p));
-            const bP = priority.findIndex(p => b.server.includes(p));
-            return (bP === -1 ? 0 : bP) - (aP === -1 ? 0 : aP); // Higher priority first
-        });
-
-        streamLinks.forEach(item => {
-            if (
-                item.link && 
-                item.link.startsWith('http') && 
-                !seenUrls.has(item.link) &&
-                !item.link.includes('t.me') &&
-                !item.link.includes('hubcloud.foo/drive')
-            ) {
-                seenUrls.add(item.link);
-                uniqueStreams.push(item);
-            }
-        });
-
-        return uniqueStreams;
+        // Return Object
+        return {
+            title: finalTitle,
+            streams: uniqueStreams
+        };
 
     } catch (error) {
         console.error('❌ Extractor Error:', error.message);
-        return [];
+        return { title: 'Error', streams: [] };
     }
 }
 
