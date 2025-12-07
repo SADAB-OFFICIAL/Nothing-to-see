@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PolyCloud Download</title>
+    <title>SADABEFY DOWNLOAD</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
@@ -295,6 +295,7 @@
         const bestContainer = document.getElementById('bestLinkContainer');
         const altList = document.getElementById('altList');
         const showAltBtn = document.getElementById('showAltBtn');
+        const pageTitle = document.getElementById('pageTitle');
 
         // Toggle Alternatives
         showAltBtn.addEventListener('click', () => {
@@ -302,14 +303,14 @@
             showAltBtn.textContent = altList.classList.contains('open') ? "Hide Alternative Servers" : "Show Alternative Servers";
         });
 
-        // Determine Endpoint based on URL
+        // Determine Endpoint
         function getEndpoint(url) {
             if (url.includes('mobilejsr') || url.includes('nexdrive')) return 'nexdrive';
             if (url.includes('gdflix') || url.includes('gdtot')) return 'gdflix';
-            return 'hubcloud'; // Default
+            return 'hubcloud'; 
         }
 
-        // Render A Single Link Card
+        // Create Card HTML
         function createCard(item, isBest = false) {
             const type = item.type || 'MKV';
             const server = item.server || 'Server';
@@ -346,7 +347,6 @@
             const apiUrl = `${API_BASE}/${endpoint}?url=${encodeURIComponent(targetUrl)}&key=${API_KEY}`;
 
             try {
-                // Update UI for NexDrive (Wait time)
                 if(endpoint === 'nexdrive') {
                     statusPill.innerHTML = '<i class="fas fa-clock"></i> Unlocking (Wait 5-10s)...';
                 }
@@ -354,12 +354,29 @@
                 const res = await fetch(apiUrl);
                 const data = await res.json();
 
+                // Handle Data Format
                 let streams = [];
-                if(Array.isArray(data)) streams = data;
-                else if(data.streams) streams = data.streams;
+                let title = "PolyCloud Download";
+
+                if(Array.isArray(data)) {
+                    streams = data;
+                } else if(data.streams) {
+                    streams = data.streams;
+                    title = data.title || title;
+                }
+                
+                // Update Page Title if available
+                if(title !== "Unknown Title" && title !== "PolyCloud Download") {
+                    pageTitle.textContent = title;
+                    pageTitle.style.fontSize = "20px";
+                }
 
                 if (streams.length > 0) {
-                    // Sort: G-Direct/10Gbps first
+                    // --- UNIQUE FILTER LOGIC ---
+                    const seenServers = new Set();
+                    const uniqueStreams = [];
+
+                    // Priority Sorting first
                     streams.sort((a, b) => {
                         const score = (s) => {
                             if(s.includes('G-Direct') || s.includes('Instant')) return 3;
@@ -370,17 +387,28 @@
                         return score(b.server) - score(a.server);
                     });
 
+                    // Deduplicate by Server Name
+                    streams.forEach(stream => {
+                        const cleanName = stream.server.trim();
+                        // Special check: allow distinct "FSL Server" vs "FSLv2 Server"
+                        // But block exact duplicates
+                        if (!seenServers.has(cleanName)) {
+                            seenServers.add(cleanName);
+                            uniqueStreams.push(stream);
+                        }
+                    });
+
                     // Success UI
                     spinner.style.display = 'none';
                     statusIcon.style.display = 'block';
                     updateStatus('success', 'Ready to download');
                     
                     // Render Best Link
-                    bestContainer.innerHTML = createCard(streams[0], true);
+                    bestContainer.innerHTML = createCard(uniqueStreams[0], true);
 
                     // Render Alternatives
-                    if(streams.length > 1) {
-                        altList.innerHTML = streams.slice(1).map(s => createCard(s)).join('');
+                    if(uniqueStreams.length > 1) {
+                        altList.innerHTML = uniqueStreams.slice(1).map(s => createCard(s)).join('');
                     } else {
                         showAltBtn.style.display = 'none';
                     }
@@ -408,9 +436,7 @@
             }
         }
 
-        // Start
         init();
-
     </script>
 </body>
 </html>
