@@ -16,10 +16,7 @@ async function nexdriveExtractor(url) {
     try {
         console.log('🚀 [DEBUG] NexDrive Logic Started for:', url);
         const streamLinks = [];
-        
-        // --- DUPLICATE PREVENTION SET ---
-        // Ye set sure karega ki hum same URL ko do baar process na karein
-        const processedUrls = new Set();
+        const processedUrls = new Set(); // To prevent loops
 
         // --- Step 1: Initial Page Load ---
         const res = await axios.get(url, { headers });
@@ -43,12 +40,8 @@ async function nexdriveExtractor(url) {
             const text = $(el).text().trim();
             const href = $(el).attr('href');
             
-            // Basic Checks
             if (!href || href === '#' || !href.startsWith('http')) return;
-
-            // --- 🛑 DUPLICATE CHECK 🛑 ---
-            // Agar ye link pehle process ho chuka hai, toh skip karo
-            if (processedUrls.has(href)) return;
+            if (processedUrls.has(href)) return; // Skip if already processing
             processedUrls.add(href);
 
             // === A. G-Direct Processing ===
@@ -90,8 +83,7 @@ async function nexdriveExtractor(url) {
                         }
 
                         if (inputCount > 0) {
-                            // Wait Timer (Important)
-                            await sleep(3500);
+                            await sleep(3500); // Wait for timer
 
                             const mPostRes = await axios.post(href, formData, {
                                 headers: {
@@ -105,26 +97,20 @@ async function nexdriveExtractor(url) {
                             });
 
                             const finalUrl = mPostRes.request.res.responseUrl; 
-                            console.log('✅ M-Cloud unlocked. Parsing GamerXYT...');
+                            console.log('✅ M-Cloud Unlocked. Parsing GamerXYT...');
                             
-                            // 3. Parse GamerXYT Page
+                            // 4. Extract Links from GamerXYT
                             const $f = cheerio.load(mPostRes.data);
                             const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
-                            
                             const innerPromises = [];
-                            
-                            // Local Set to prevent duplicates within GamerXYT page itself
-                            const gamerPageSeenLinks = new Set();
 
                             finalButtons.each((k, btn) => {
                                 const bLink = $f(btn).attr('href');
                                 let bText = $f(btn).text().trim();
                                 
                                 if (bLink && bLink.startsWith('http')) {
-                                    
-                                    // Prevent duplicate buttons on the final page
-                                    if(gamerPageSeenLinks.has(bLink)) return;
-                                    gamerPageSeenLinks.add(bLink);
+                                    if (processedUrls.has(bLink)) return; // Prevent loop
+                                    processedUrls.add(bLink);
 
                                     innerPromises.push((async () => {
                                         let serverName = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim() || 'M-Cloud Server';
@@ -176,8 +162,7 @@ async function nexdriveExtractor(url) {
                                             }
                                         }
 
-                                        // --- Junk Filter (Very Important for Telegram links) ---
-                                        if (!finalLink.includes('t.me') && !finalLink.includes('telegram') && !finalLink.includes('ampproject')) {
+                                        if (!finalLink.includes('t.me') && !finalLink.includes('telegram')) {
                                             streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
                                         }
                                     })());
@@ -196,19 +181,11 @@ async function nexdriveExtractor(url) {
 
         await Promise.all(promises);
         
-        // Final Output Cleanup
-        // We use Map to keep only unique Links
-        const uniqueMap = new Map();
-        streamLinks.forEach(item => {
-            // Use link as key to ensure uniqueness
-            if(!uniqueMap.has(item.link)){
-                uniqueMap.set(item.link, item);
-            }
-        });
-
-        const uniqueStreams = Array.from(uniqueMap.values());
+        // Final Deduplication
+        const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
+            .map(link => streamLinks.find(a => a.link === link));
         
-        // Sort
+        // Sort: 10Gbps first, then G-Direct
         uniqueStreams.sort((a, b) => {
             if (a.server.includes('10Gbps')) return -1;
             if (a.server.includes('G-Direct')) return -1;
