@@ -34,24 +34,19 @@ async function nexdriveExtractor(url) {
 
         // --- Step 3: Find & Process Buttons ---
         const promises = [];
-        const processed = new Set();
 
         $('a').each((i, el) => {
             const text = $(el).text().trim();
             const href = $(el).attr('href');
             
             if (!href || href === '#' || !href.startsWith('http')) return;
-            if (processed.has(href)) return;
-            processed.add(href);
 
             // === A. G-Direct Processing ===
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
                 const p = (async () => {
                     console.log('⚡ [DEBUG] Found G-Direct:', href);
                     try {
-                        const fastRes = await axios.get(href, { 
-                            headers: { ...headers, 'Referer': url } 
-                        });
+                        const fastRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
                         const $$ = cheerio.load(fastRes.data);
                         const finalLink = $$('a.btn-primary').attr('href') || 
                                           $$('a:contains("Download Now")').attr('href');
@@ -74,7 +69,7 @@ async function nexdriveExtractor(url) {
                         const mHtml = mRes.data;
                         const $m = cheerio.load(mHtml);
                         
-                        // 2. Find Inputs
+                        // 2. Find Inputs & Submit Form (Generate Link)
                         const formData = new URLSearchParams();
                         let inputCount = 0;
                         const inputRegex = /<input[^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']/g;
@@ -84,11 +79,13 @@ async function nexdriveExtractor(url) {
                             inputCount++;
                         }
 
+                        // Also check script for direct redirect (Fallback)
+                        let finalUrl = null;
+                        
                         if (inputCount > 0) {
-                            console.log('⏳ Waiting 3.5s for M-Cloud Timer...');
-                            await sleep(3500); 
+                            console.log('⏳ [DEBUG] Waiting 3.5s for M-Cloud Timer...');
+                            await sleep(3500);
 
-                            // 3. Submit POST
                             const mPostRes = await axios.post(href, formData, {
                                 headers: {
                                     ...headers,
@@ -99,24 +96,40 @@ async function nexdriveExtractor(url) {
                                 },
                                 maxRedirects: 5
                             });
+                            finalUrl = mPostRes.request.res.responseUrl;
+                        } else {
+                             const scriptMatch = mHtml.match(/var\s+url\s*=\s*['"]([^'"]+)['"]/) || 
+                                                 mHtml.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
+                             if(scriptMatch) finalUrl = scriptMatch[1];
+                        }
 
-                            const finalUrl = mPostRes.request.res.responseUrl; 
+                        if (finalUrl) {
                             console.log('✅ M-Cloud Unlocked. Parsing GamerXYT...');
                             
-                            // 4. Extract Links from GamerXYT
-                            const $f = cheerio.load(mPostRes.data);
+                            // 3. Extract Links from GamerXYT
+                            // Need to fetch again if obtained via script, or parse if via POST
+                            let $f;
+                            if(inputCount > 0) {
+                                // We already have data from POST response, but re-fetching ensures clean state or if POST returned a redirect body
+                                // Actually, axios follows redirect, so mPostRes.data is the final page
+                                // BUT, let's re-fetch to be safe or just use data if valid
+                                const gamerRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
+                                $f = cheerio.load(gamerRes.data);
+                            } else {
+                                const gamerRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
+                                $f = cheerio.load(gamerRes.data);
+                            }
+
                             const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
-                            
                             const innerPromises = [];
-                            
+
                             finalButtons.each((k, btn) => {
                                 const bLink = $f(btn).attr('href');
                                 let bText = $f(btn).text().trim();
                                 
                                 if (bLink && bLink.startsWith('http')) {
                                     innerPromises.push((async () => {
-                                        // Clean Name
-                                        bText = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim() || 'M-Cloud Server';
+                                        let serverName = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim() || 'M-Cloud Server';
                                         let finalLink = bLink;
 
                                         // --- FIX: 10Gbps / HubCDN Resolver ---
@@ -138,10 +151,8 @@ async function nexdriveExtractor(url) {
                                                          finalLink = matches.reduce((a, b) => a.length > b.length ? a : b).replace(/\\/g, '');
                                                     }
                                                 }
-                                                bText = 'Server : 10Gbps';
-                                            } catch(err) {
-                                                console.log('HubCDN Error:', err.message);
-                                            }
+                                                serverName = 'Server: 10Gbps';
+                                            } catch(err) {}
                                         }
 
                                         // --- Standard Redirects ---
@@ -160,7 +171,7 @@ async function nexdriveExtractor(url) {
 
                                         // --- PixelDrain Fix ---
                                         if (finalLink.includes('pixeld')) {
-                                            bText = 'PixelDrain';
+                                            serverName = 'PixelDrain';
                                             if (!finalLink.includes('api')) {
                                                 const id = finalLink.split('/').pop();
                                                 finalLink = `https://pixeldrain.com/api/file/${id}?download`;
@@ -169,7 +180,7 @@ async function nexdriveExtractor(url) {
 
                                         // Junk Filter
                                         if (!finalLink.includes('t.me') && !finalLink.includes('telegram')) {
-                                            streamLinks.push({ server: bText, link: finalLink, type: 'mkv' });
+                                            streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
                                         }
                                     })());
                                 }
@@ -191,7 +202,7 @@ async function nexdriveExtractor(url) {
         const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link)))
             .map(link => streamLinks.find(a => a.link === link));
         
-        // Sort
+        // Sort: 10Gbps first, then G-Direct
         uniqueStreams.sort((a, b) => {
             if (a.server.includes('10Gbps')) return -1;
             if (a.server.includes('G-Direct')) return -1;
