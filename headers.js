@@ -1,4 +1,3 @@
-// headers.js
 module.exports = {
     'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
     'sec-ch-ua-mobile': '?0',
