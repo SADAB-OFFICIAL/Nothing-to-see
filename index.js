@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path'); // <--- New Import for File Paths
 const NodeCache = require('node-cache');
 
 // --- Import Extractors ---
@@ -13,11 +14,16 @@ const PORT = process.env.PORT || 3000;
 // 🔒 SECURITY: Set your Key here
 const API_SECRET = process.env.API_KEY || "sadabefy"; 
 
-// 🚀 CACHING
+// 🚀 CACHING: Data 10 minute (600 seconds) tak save rahega
 const cache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
 
+// --- Middleware ---
 app.use(cors());
 app.use(express.json());
+
+// 📂 SERVE STATIC FILES (Public Folder)
+// Isse aapka download.html load hoga
+app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Middleware: API Key Checker ---
 const authenticate = (req, res, next) => {
@@ -25,7 +31,7 @@ const authenticate = (req, res, next) => {
     if (!userKey || userKey !== API_SECRET) {
         return res.status(401).json({ 
             error: 'Unauthorized', 
-            message: 'Invalid API Key.' 
+            message: 'Invalid or missing API Key.' 
         });
     }
     next();
@@ -70,6 +76,7 @@ async function processRequest(url, extractorFn, res) {
         // 4. Save to Cache & Send
         if (responseObj.streams && responseObj.streams.length > 0) {
             cache.set(url, responseObj);
+            console.log(`💾 Saved to Cache: ${url}`);
             res.json(responseObj);
         } else {
             res.status(404).json({ error: 'No links found', title: responseObj.title });
@@ -81,25 +88,37 @@ async function processRequest(url, extractorFn, res) {
     }
 }
 
-// --- Routes ---
+// --- API Routes ---
 
+// Default route (API Status)
 app.get('/', (req, res) => {
-    res.json({ status: 'Online 🟢', message: 'Universal Extractor API Ready' });
+    res.json({ 
+        status: 'Online 🟢', 
+        message: 'Universal Extractor API Ready',
+        ui: '/download.html' 
+    });
 });
 
+// 1. HubCloud Route
 app.get('/hubcloud', authenticate, async (req, res) => {
     await processRequest(req.query.url, hubcloudExtracter, res);
 });
 
+// 2. GDFlix Route
 app.get('/gdflix', authenticate, async (req, res) => {
     await processRequest(req.query.url, gdflixExtractor, res);
 });
 
+// 3. NexDrive Route
 app.get('/nexdrive', authenticate, async (req, res) => {
     await processRequest(req.query.url, nexdriveExtractor, res);
 });
 
-// --- Start ---
+// --- Start Server ---
 app.listen(PORT, () => {
+    console.log(`=================================================`);
     console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📂 UI Available at: http://localhost:${PORT}/download.html`);
+    console.log(`🔑 API Key: ${API_SECRET}`);
+    console.log(`=================================================`);
 });
