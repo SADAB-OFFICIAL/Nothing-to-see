@@ -16,7 +16,6 @@ async function nexdriveExtractor(url) {
     try {
         console.log('🚀 [DEBUG] NexDrive Logic Started for:', url);
         const streamLinks = [];
-        const processedUrls = new Set(); // To prevent loops
 
         // --- Step 1: Initial Page Load ---
         const res = await axios.get(url, { headers });
@@ -41,8 +40,6 @@ async function nexdriveExtractor(url) {
             const href = $(el).attr('href');
             
             if (!href || href === '#' || !href.startsWith('http')) return;
-            if (processedUrls.has(href)) return; // Skip if already processing
-            processedUrls.add(href);
 
             // === A. G-Direct Processing ===
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
@@ -72,7 +69,7 @@ async function nexdriveExtractor(url) {
                         const mHtml = mRes.data;
                         const $m = cheerio.load(mHtml);
                         
-                        // 2. Find Inputs & Submit Form
+                        // 2. Find Inputs & Submit Form (Generate Link)
                         const formData = new URLSearchParams();
                         let inputCount = 0;
                         const inputRegex = /<input[^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']/g;
@@ -82,8 +79,12 @@ async function nexdriveExtractor(url) {
                             inputCount++;
                         }
 
+                        // Also check script for direct redirect (Fallback)
+                        let finalUrl = null;
+                        
                         if (inputCount > 0) {
-                            await sleep(3500); // Wait for timer
+                            console.log('⏳ [DEBUG] Waiting 3.5s for M-Cloud Timer...');
+                            await sleep(3500);
 
                             const mPostRes = await axios.post(href, formData, {
                                 headers: {
@@ -95,12 +96,30 @@ async function nexdriveExtractor(url) {
                                 },
                                 maxRedirects: 5
                             });
+                            finalUrl = mPostRes.request.res.responseUrl;
+                        } else {
+                             const scriptMatch = mHtml.match(/var\s+url\s*=\s*['"]([^'"]+)['"]/) || 
+                                                 mHtml.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
+                             if(scriptMatch) finalUrl = scriptMatch[1];
+                        }
 
-                            const finalUrl = mPostRes.request.res.responseUrl; 
+                        if (finalUrl) {
                             console.log('✅ M-Cloud Unlocked. Parsing GamerXYT...');
                             
-                            // 4. Extract Links from GamerXYT
-                            const $f = cheerio.load(mPostRes.data);
+                            // 3. Extract Links from GamerXYT
+                            // Need to fetch again if obtained via script, or parse if via POST
+                            let $f;
+                            if(inputCount > 0) {
+                                // We already have data from POST response, but re-fetching ensures clean state or if POST returned a redirect body
+                                // Actually, axios follows redirect, so mPostRes.data is the final page
+                                // BUT, let's re-fetch to be safe or just use data if valid
+                                const gamerRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
+                                $f = cheerio.load(gamerRes.data);
+                            } else {
+                                const gamerRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
+                                $f = cheerio.load(gamerRes.data);
+                            }
+
                             const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
                             const innerPromises = [];
 
@@ -109,9 +128,6 @@ async function nexdriveExtractor(url) {
                                 let bText = $f(btn).text().trim();
                                 
                                 if (bLink && bLink.startsWith('http')) {
-                                    if (processedUrls.has(bLink)) return; // Prevent loop
-                                    processedUrls.add(bLink);
-
                                     innerPromises.push((async () => {
                                         let serverName = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim() || 'M-Cloud Server';
                                         let finalLink = bLink;
@@ -162,6 +178,7 @@ async function nexdriveExtractor(url) {
                                             }
                                         }
 
+                                        // Junk Filter
                                         if (!finalLink.includes('t.me') && !finalLink.includes('telegram')) {
                                             streamLinks.push({ server: serverName, link: finalLink, type: 'mkv' });
                                         }
