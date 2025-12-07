@@ -1,128 +1,48 @@
-const express = require('express');
-const cors = require('cors');
-const path = require('path'); 
-const NodeCache = require('node-cache');
+const axios = require('axios');
 
-// --- Import Extractors ---
-const hubcloudExtracter = require('./extractors/hubcloud');
-const gdflixExtractor = require('./extractors/gdflix');
-const nexdriveExtractor = require('./extractors/nexdrive');
-
-// --- Import Checker (NEW) ---
-const checkStreams = require('./utils/checker');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// 🔒 SECURITY
-const API_SECRET = process.env.API_KEY || "sadabefy"; 
-
-// 🚀 CACHING
-const cache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
-
-// --- Middleware ---
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// --- Auth Middleware ---
-const authenticate = (req, res, next) => {
-    const userKey = req.query.key;
-    if (!userKey || userKey !== API_SECRET) {
-        return res.status(401).json({ 
-            error: 'Unauthorized', 
-            message: 'Invalid or missing API Key.' 
-        });
-    }
-    next();
+const checkHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': '*/*',
+    'Connection': 'keep-alive',
+    'Range': 'bytes=0-100' // Fast Check
 };
 
-// --- Helper: Process Request ---
-async function processRequest(url, extractorFn, res) {
-    if (!url) {
-        return res.status(400).json({ error: 'URL parameter is missing.' });
-    }
+async function checkStreams(streams) {
+    if (!streams || streams.length === 0) return [];
 
-    try {
-        // 1. Check Cache
-        const cachedData = cache.get(url);
-        if (cachedData) {
-            console.log(`⚡ Served from Cache: ${url}`);
-            return res.json(cachedData);
+    console.log(`🚦 Checking health of ${streams.length} links...`);
+
+    const checkPromises = streams.map(async (stream) => {
+        try {
+            // Google/Worker links ko skip karo (False Positive se bachne ke liye)
+            if (stream.link.includes('googleusercontent') || stream.link.includes('workers.dev')) {
+                return stream; 
+            }
+
+            await axios.head(stream.link, { 
+                headers: checkHeaders, 
+                timeout: 3500 
+            });
+
+            return stream;
+
+        } catch (error) {
+            // Sirf confirm dead links ko hatao
+            if (error.response && (error.response.status === 404 || error.response.status === 410)) {
+                console.log(`💀 REMOVED Dead Link (404): ${stream.server}`);
+                return null;
+            }
+            if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+                console.log(`💀 REMOVED Server Down: ${stream.server}`);
+                return null;
+            }
+            // 403 Forbidden ko allow karo (Browser mein chal sakta hai)
+            return stream; 
         }
+    });
 
-        // 2. Scrape Data
-        const result = await extractorFn(url);
-
-        // 3. Normalize Data
-        let responseObj = {};
-        let rawStreams = [];
-
-        if (Array.isArray(result)) {
-            responseObj = {
-                source: 'live',
-                title: "Unknown Title",
-                streams: []
-            };
-            rawStreams = result;
-        } else {
-            responseObj = {
-                source: 'live',
-                title: result.title || "Unknown Title",
-                streams: []
-            };
-            rawStreams = result.streams || [];
-        }
-
-        // 4. 🚦 CHECK LINK HEALTH (NEW STEP)
-        if (rawStreams.length > 0) {
-            console.log('🔍 Verifying links...');
-            const validStreams = await checkStreams(rawStreams);
-            responseObj.streams = validStreams;
-        }
-
-        // 5. Save to Cache & Send
-        if (responseObj.streams.length > 0) {
-            cache.set(url, responseObj);
-            console.log(`💾 Saved to Cache: ${url} (${responseObj.streams.length} links)`);
-            res.json(responseObj);
-        } else {
-            res.status(404).json({ error: 'No working links found', title: responseObj.title });
-        }
-
-    } catch (error) {
-        console.error('API Internal Error:', error.message);
-        res.status(500).json({ error: 'Extraction Failed', details: error.message });
-    }
+    const results = await Promise.all(checkPromises);
+    return results.filter(s => s !== null);
 }
 
-// --- Routes ---
-
-app.get('/', (req, res) => {
-    res.json({ 
-        status: 'Online 🟢', 
-        message: 'Universal Extractor API Ready',
-        ui: '/download.html' 
-    });
-});
-
-app.get('/hubcloud', authenticate, async (req, res) => {
-    await processRequest(req.query.url, hubcloudExtracter, res);
-});
-
-app.get('/gdflix', authenticate, async (req, res) => {
-    await processRequest(req.query.url, gdflixExtractor, res);
-});
-
-app.get('/nexdrive', authenticate, async (req, res) => {
-    await processRequest(req.query.url, nexdriveExtractor, res);
-});
-
-// --- Start ---
-app.listen(PORT, () => {
-    console.log(`=================================================`);
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🚦 Link Health Checker: Active`);
-    console.log(`📂 UI Available at: http://localhost:${PORT}/download.html`);
-    console.log(`=================================================`);
-});
+module.exports = checkStreams;
