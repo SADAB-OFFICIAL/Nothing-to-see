@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SADABEFY DOWNLOAD</title>
+    <title>PolyCloud Download</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
             --bg-color: #050505;
             --card-bg: #121212;
-            --primary: #6C63FF; /* Default Purple */
+            --primary: #6C63FF; 
             --accent: #FF4757;
             --text: #ffffff;
             --text-muted: #888888;
@@ -24,6 +24,11 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            /* Disable selection globally */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
         }
 
         /* --- Header --- */
@@ -82,7 +87,6 @@
             opacity: 0.8;
         }
 
-        /* Processing Spinner */
         .spinner {
             width: 60px;
             height: 60px;
@@ -97,7 +101,6 @@
 
         h1 { font-size: 28px; font-weight: 700; margin-bottom: 20px; background: linear-gradient(to right, #fff, #aaa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 
-        /* --- Status Pill --- */
         .status-pill {
             display: inline-flex;
             align-items: center;
@@ -124,13 +127,12 @@
             color: #ff4757;
         }
 
-        /* --- Results Area --- */
         .results-area {
             width: 100%;
             opacity: 0;
             transform: translateY(20px);
             transition: all 0.5s ease;
-            display: none; /* Hidden initially */
+            display: none; 
         }
 
         .results-area.show {
@@ -154,7 +156,7 @@
         
         .section-label i { color: #f1c40f; }
 
-        /* --- Link Card --- */
+        /* --- Link Card (PROTECTED) --- */
         .link-card {
             background: linear-gradient(145deg, #1e1e1e, #161616);
             border: 1px solid #333;
@@ -163,11 +165,20 @@
             display: flex;
             align-items: center;
             gap: 16px;
-            text-decoration: none;
             margin-bottom: 12px;
             transition: transform 0.2s, border-color 0.2s;
             position: relative;
             overflow: hidden;
+            
+            /* --- SECURITY CSS --- */
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent; /* Remove blue highlight on tap */
+            -webkit-touch-callout: none; /* Disable long-press menu on iOS */
+            -webkit-user-select: none;   /* Disable text selection Chrome/Safari */
+            -khtml-user-select: none;    /* Konqueror HTML */
+            -moz-user-select: none;      /* Firefox */
+            -ms-user-select: none;       /* IE10+ */
+            user-select: none;           /* Standard */
         }
 
         .link-card:hover {
@@ -175,7 +186,6 @@
             border-color: var(--primary);
         }
 
-        /* Best Link Highlight */
         .link-card.best {
             background: linear-gradient(145deg, rgba(108, 99, 255, 0.15), rgba(108, 99, 255, 0.05));
             border-color: rgba(108, 99, 255, 0.3);
@@ -214,7 +224,6 @@
             font-size: 14px;
         }
 
-        /* Alternative Toggle */
         .alt-btn {
             background: #1a1a1a;
             border: 1px solid #333;
@@ -238,7 +247,7 @@
 
     </style>
 </head>
-<body>
+<body oncontextmenu="return false;"> <!-- Disable Right Click globally -->
 
     <div class="header">
         <a href="javascript:history.back()" class="back-btn">
@@ -247,7 +256,6 @@
     </div>
 
     <div class="main-container">
-        <!-- Logo / Spinner Box -->
         <div class="status-box">
             <div id="spinner" class="spinner"></div>
             <i id="statusIcon" class="fas fa-cloud-download-alt status-icon" style="display: none;"></i>
@@ -255,39 +263,30 @@
 
         <h1 id="pageTitle">PolyCloud Download</h1>
 
-        <!-- Status Pill -->
         <div id="statusPill" class="status-pill">
             <i class="fas fa-circle-notch fa-spin"></i> Processing your link...
         </div>
 
-        <!-- Results Area -->
         <div id="resultsArea" class="results-area">
             
-            <!-- Recommended (Best Link) -->
             <div id="recommendedSection">
                 <div class="section-label"><i class="fas fa-star"></i> Recommended Server</div>
                 <div id="bestLinkContainer"></div>
             </div>
 
-            <!-- Alternatives -->
             <button id="showAltBtn" class="alt-btn">Show Alternative Servers</button>
-            <div id="altList" class="alt-list">
-                <!-- Other links go here -->
-            </div>
+            <div id="altList" class="alt-list"></div>
 
         </div>
     </div>
 
     <script>
-        // CONFIGURATION
         const API_BASE = "https://nothing-to-see-nine.vercel.app";
         const API_KEY = "sadabefy";
 
-        // Get URL Param
         const urlParams = new URLSearchParams(window.location.search);
         const targetUrl = urlParams.get('url');
 
-        // Elements
         const statusPill = document.getElementById('statusPill');
         const resultsArea = document.getElementById('resultsArea');
         const spinner = document.getElementById('spinner');
@@ -297,34 +296,41 @@
         const showAltBtn = document.getElementById('showAltBtn');
         const pageTitle = document.getElementById('pageTitle');
 
-        // Toggle Alternatives
         showAltBtn.addEventListener('click', () => {
             altList.classList.toggle('open');
             showAltBtn.textContent = altList.classList.contains('open') ? "Hide Alternative Servers" : "Show Alternative Servers";
         });
 
-        // Determine Endpoint
         function getEndpoint(url) {
             if (url.includes('mobilejsr') || url.includes('nexdrive')) return 'nexdrive';
             if (url.includes('gdflix') || url.includes('gdtot')) return 'gdflix';
             return 'hubcloud'; 
         }
 
-        // Create Card HTML
+        // --- SECURE OPEN LINK FUNCTION ---
+        function openSecureLink(url) {
+            // Programmatically open link
+            window.open(url, '_blank');
+        }
+
         function createCard(item, isBest = false) {
             const type = item.type || 'MKV';
             const server = item.server || 'Server';
             const link = item.link;
 
-            // Icon Logic
             let iconClass = 'fas fa-server';
             let iconColor = '#fff';
             if(server.includes('G-Direct') || server.includes('Instant')) { iconClass = 'fab fa-google-drive'; iconColor = '#2ecc71'; }
             else if(server.includes('10Gbps')) { iconClass = 'fas fa-bolt'; iconColor = '#f1c40f'; }
             else if(server.includes('Pixel')) { iconClass = 'fas fa-film'; iconColor = '#3498db'; }
 
+            // --- CHANGED: Use DIV instead of A tag ---
+            // --- ADDED: oncontextmenu="return false" (Disable Right Click) ---
             return `
-            <a href="${link}" class="link-card ${isBest ? 'best' : ''}" target="_blank">
+            <div class="link-card ${isBest ? 'best' : ''}" 
+                 onclick="openSecureLink('${link}')"
+                 oncontextmenu="return false;" 
+            >
                 <div class="icon-box" style="color: ${iconColor};">
                     <i class="${iconClass}"></i>
                 </div>
@@ -333,7 +339,7 @@
                     <div class="server-meta">${isBest ? 'Fastest Download' : 'Alternative Source'} • ${type.toUpperCase()}</div>
                 </div>
                 <i class="fas fa-chevron-right card-arrow"></i>
-            </a>
+            </div>
             `;
         }
 
@@ -354,7 +360,6 @@
                 const res = await fetch(apiUrl);
                 const data = await res.json();
 
-                // Handle Data Format
                 let streams = [];
                 let title = "PolyCloud Download";
 
@@ -365,18 +370,15 @@
                     title = data.title || title;
                 }
                 
-                // Update Page Title if available
                 if(title !== "Unknown Title" && title !== "PolyCloud Download") {
                     pageTitle.textContent = title;
                     pageTitle.style.fontSize = "20px";
                 }
 
                 if (streams.length > 0) {
-                    // --- UNIQUE FILTER LOGIC ---
                     const seenServers = new Set();
                     const uniqueStreams = [];
 
-                    // Priority Sorting first
                     streams.sort((a, b) => {
                         const score = (s) => {
                             if(s.includes('G-Direct') || s.includes('Instant')) return 3;
@@ -387,26 +389,20 @@
                         return score(b.server) - score(a.server);
                     });
 
-                    // Deduplicate by Server Name
                     streams.forEach(stream => {
                         const cleanName = stream.server.trim();
-                        // Special check: allow distinct "FSL Server" vs "FSLv2 Server"
-                        // But block exact duplicates
                         if (!seenServers.has(cleanName)) {
                             seenServers.add(cleanName);
                             uniqueStreams.push(stream);
                         }
                     });
 
-                    // Success UI
                     spinner.style.display = 'none';
                     statusIcon.style.display = 'block';
                     updateStatus('success', 'Ready to download');
                     
-                    // Render Best Link
                     bestContainer.innerHTML = createCard(uniqueStreams[0], true);
 
-                    // Render Alternatives
                     if(uniqueStreams.length > 1) {
                         altList.innerHTML = uniqueStreams.slice(1).map(s => createCard(s)).join('');
                     } else {
