@@ -3,435 +3,73 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PolyCloud Download</title>
+    <title>Download</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        :root {
-            --bg-color: #050505;
-            --card-bg: #121212;
-            --primary: #6C63FF; 
-            --accent: #FF4757;
-            --text: #ffffff;
-            --text-muted: #888888;
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            /* Disable selection globally */
-            -webkit-user-select: none;
-            -moz-user-select: none;
-            -ms-user-select: none;
-            user-select: none;
-        }
-
-        /* --- Header --- */
-        .header {
-            width: 100%;
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            max-width: 600px;
-        }
-
-        .back-btn {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            color: #fff;
-            padding: 8px 16px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            text-decoration: none;
-        }
-
-        /* --- Main Content --- */
-        .main-container {
-            flex: 1;
-            width: 100%;
-            max-width: 500px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 20px;
-            text-align: center;
-            margin-top: 20px;
-        }
-
-        /* --- Logo/Status Box --- */
-        .status-box {
-            width: 180px;
-            height: 180px;
-            background: #1a1a1a;
-            border-radius: 24px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 30px;
-            position: relative;
-            box-shadow: 0 0 40px rgba(108, 99, 255, 0.1);
-        }
-
-        .status-icon {
-            font-size: 60px;
-            color: #fff;
-            opacity: 0.8;
-        }
-
-        .spinner {
-            width: 60px;
-            height: 60px;
-            border: 4px solid rgba(255, 255, 255, 0.1);
-            border-top-color: var(--primary);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            position: absolute;
-        }
-
+        :root { --bg: #050505; --card: #121212; --primary: #6C63FF; --text: #fff; }
+        body { background: var(--bg); color: var(--text); font-family: sans-serif; display: flex; flex-direction: column; align-items: center; user-select: none; }
+        .main-container { width: 100%; max-width: 500px; padding: 20px; text-align: center; }
+        .link-card { background: #1e1e1e; padding: 15px; margin-bottom: 10px; border-radius: 12px; display: flex; align-items: center; gap: 15px; cursor: pointer; border: 1px solid #333; }
+        .link-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+        .link-card.best { border-color: #2ecc71; background: rgba(46, 204, 113, 0.1); }
+        .server-name { font-weight: bold; }
+        .spinner { width: 40px; height: 40px; border: 3px solid #333; border-top: 3px solid var(--primary); border-radius: 50%; animation: spin 1s infinite; margin: 20px auto; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
-
-        h1 { font-size: 28px; font-weight: 700; margin-bottom: 20px; background: linear-gradient(to right, #fff, #aaa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-
-        .status-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: #1a1a1a;
-            border: 1px solid #333;
-            padding: 10px 20px;
-            border-radius: 30px;
-            font-size: 14px;
-            color: var(--text-muted);
-            margin-bottom: 40px;
-            transition: all 0.3s;
-        }
-
-        .status-pill.success {
-            background: rgba(15, 157, 88, 0.1);
-            border-color: rgba(15, 157, 88, 0.3);
-            color: #2ecc71;
-        }
-
-        .status-pill.error {
-            background: rgba(255, 71, 87, 0.1);
-            border-color: rgba(255, 71, 87, 0.3);
-            color: #ff4757;
-        }
-
-        .results-area {
-            width: 100%;
-            opacity: 0;
-            transform: translateY(20px);
-            transition: all 0.5s ease;
-            display: none; 
-        }
-
-        .results-area.show {
-            opacity: 1;
-            transform: translateY(0);
-            display: block;
-        }
-
-        .section-label {
-            text-align: left;
-            color: #666;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            margin-bottom: 12px;
-            letter-spacing: 1px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .section-label i { color: #f1c40f; }
-
-        /* --- Link Card (PROTECTED) --- */
-        .link-card {
-            background: linear-gradient(145deg, #1e1e1e, #161616);
-            border: 1px solid #333;
-            border-radius: 16px;
-            padding: 16px;
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            margin-bottom: 12px;
-            transition: transform 0.2s, border-color 0.2s;
-            position: relative;
-            overflow: hidden;
-            
-            /* --- SECURITY CSS --- */
-            cursor: pointer;
-            -webkit-tap-highlight-color: transparent; /* Remove blue highlight on tap */
-            -webkit-touch-callout: none; /* Disable long-press menu on iOS */
-            -webkit-user-select: none;   /* Disable text selection Chrome/Safari */
-            -khtml-user-select: none;    /* Konqueror HTML */
-            -moz-user-select: none;      /* Firefox */
-            -ms-user-select: none;       /* IE10+ */
-            user-select: none;           /* Standard */
-        }
-
-        .link-card:hover {
-            transform: translateY(-2px);
-            border-color: var(--primary);
-        }
-
-        .link-card.best {
-            background: linear-gradient(145deg, rgba(108, 99, 255, 0.15), rgba(108, 99, 255, 0.05));
-            border-color: rgba(108, 99, 255, 0.3);
-        }
-
-        .icon-box {
-            width: 44px;
-            height: 44px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 20px;
-        }
-
-        .card-info {
-            flex: 1;
-            text-align: left;
-        }
-
-        .server-name {
-            color: #fff;
-            font-weight: 600;
-            font-size: 16px;
-            margin-bottom: 4px;
-        }
-
-        .server-meta {
-            color: #888;
-            font-size: 12px;
-        }
-
-        .card-arrow {
-            color: #555;
-            font-size: 14px;
-        }
-
-        .alt-btn {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            color: #aaa;
-            width: 100%;
-            padding: 14px;
-            border-radius: 12px;
-            cursor: pointer;
-            margin-top: 10px;
-            font-size: 14px;
-        }
-
-        .alt-list {
-            margin-top: 15px;
-            display: none;
-        }
-
-        .alt-list.open {
-            display: block;
-        }
-
     </style>
 </head>
-<body oncontextmenu="return false;"> <!-- Disable Right Click globally -->
-
-    <div class="header">
-        <a href="javascript:history.back()" class="back-btn">
-            <i class="fas fa-chevron-left"></i> Back
-        </a>
-    </div>
-
+<body oncontextmenu="return false;">
     <div class="main-container">
-        <div class="status-box">
-            <div id="spinner" class="spinner"></div>
-            <i id="statusIcon" class="fas fa-cloud-download-alt status-icon" style="display: none;"></i>
-        </div>
-
-        <h1 id="pageTitle">PolyCloud Download</h1>
-
-        <div id="statusPill" class="status-pill">
-            <i class="fas fa-circle-notch fa-spin"></i> Processing your link...
-        </div>
-
-        <div id="resultsArea" class="results-area">
-            
-            <div id="recommendedSection">
-                <div class="section-label"><i class="fas fa-star"></i> Recommended Server</div>
-                <div id="bestLinkContainer"></div>
-            </div>
-
-            <button id="showAltBtn" class="alt-btn">Show Alternative Servers</button>
-            <div id="altList" class="alt-list"></div>
-
-        </div>
+        <h1>Download Links</h1>
+        <div id="status">Processing...</div>
+        <div id="spinner" class="spinner"></div>
+        <div id="links"></div>
     </div>
-
     <script>
-        const API_BASE = "https://nothing-to-see-nine.vercel.app";
-        const API_KEY = "sadabefy";
+        const API = "https://nothing-to-see-nine.vercel.app";
+        const KEY = "sadabefy";
+        const url = new URLSearchParams(window.location.search).get('url');
 
-        const urlParams = new URLSearchParams(window.location.search);
-        const targetUrl = urlParams.get('url');
-
-        const statusPill = document.getElementById('statusPill');
-        const resultsArea = document.getElementById('resultsArea');
-        const spinner = document.getElementById('spinner');
-        const statusIcon = document.getElementById('statusIcon');
-        const bestContainer = document.getElementById('bestLinkContainer');
-        const altList = document.getElementById('altList');
-        const showAltBtn = document.getElementById('showAltBtn');
-        const pageTitle = document.getElementById('pageTitle');
-
-        showAltBtn.addEventListener('click', () => {
-            altList.classList.toggle('open');
-            showAltBtn.textContent = altList.classList.contains('open') ? "Hide Alternative Servers" : "Show Alternative Servers";
-        });
-
-        function getEndpoint(url) {
-            if (url.includes('mobilejsr') || url.includes('nexdrive')) return 'nexdrive';
-            if (url.includes('gdflix') || url.includes('gdtot')) return 'gdflix';
-            return 'hubcloud'; 
-        }
-
-        // --- SECURE OPEN LINK FUNCTION ---
-        function openSecureLink(url) {
-            // Programmatically open link
-            window.open(url, '_blank');
-        }
-
-        function createCard(item, isBest = false) {
-            const type = item.type || 'MKV';
-            const server = item.server || 'Server';
-            const link = item.link;
-
-            let iconClass = 'fas fa-server';
-            let iconColor = '#fff';
-            if(server.includes('G-Direct') || server.includes('Instant')) { iconClass = 'fab fa-google-drive'; iconColor = '#2ecc71'; }
-            else if(server.includes('10Gbps')) { iconClass = 'fas fa-bolt'; iconColor = '#f1c40f'; }
-            else if(server.includes('Pixel')) { iconClass = 'fas fa-film'; iconColor = '#3498db'; }
-
-            // --- CHANGED: Use DIV instead of A tag ---
-            // --- ADDED: oncontextmenu="return false" (Disable Right Click) ---
-            return `
-            <div class="link-card ${isBest ? 'best' : ''}" 
-                 onclick="openSecureLink('${link}')"
-                 oncontextmenu="return false;" 
-            >
-                <div class="icon-box" style="color: ${iconColor};">
-                    <i class="${iconClass}"></i>
-                </div>
-                <div class="card-info">
-                    <div class="server-name">${server}</div>
-                    <div class="server-meta">${isBest ? 'Fastest Download' : 'Alternative Source'} • ${type.toUpperCase()}</div>
-                </div>
-                <i class="fas fa-chevron-right card-arrow"></i>
-            </div>
-            `;
-        }
+        function openLink(link) { window.open(link, '_blank'); }
 
         async function init() {
-            if (!targetUrl) {
-                updateStatus('error', 'No URL provided');
-                return;
-            }
+            if(!url) return document.getElementById('status').innerText = "No URL provided";
+            
+            let endpoint = 'hubcloud';
+            if(url.includes('mobilejsr') || url.includes('nexdrive')) endpoint = 'nexdrive';
+            else if(url.includes('gdflix')) endpoint = 'gdflix';
 
-            const endpoint = getEndpoint(targetUrl);
-            const apiUrl = `${API_BASE}/${endpoint}?url=${encodeURIComponent(targetUrl)}&key=${API_KEY}`;
+            if(endpoint === 'nexdrive') document.getElementById('status').innerText = "Unlocking (Wait 10s)...";
 
             try {
-                if(endpoint === 'nexdrive') {
-                    statusPill.innerHTML = '<i class="fas fa-clock"></i> Unlocking (Wait 5-10s)...';
-                }
-
-                const res = await fetch(apiUrl);
+                const res = await fetch(`${API}/${endpoint}?url=${encodeURIComponent(url)}&key=${KEY}`);
                 const data = await res.json();
-
-                let streams = [];
-                let title = "PolyCloud Download";
-
-                if(Array.isArray(data)) {
-                    streams = data;
-                } else if(data.streams) {
-                    streams = data.streams;
-                    title = data.title || title;
-                }
                 
-                if(title !== "Unknown Title" && title !== "PolyCloud Download") {
-                    pageTitle.textContent = title;
-                    pageTitle.style.fontSize = "20px";
-                }
-
-                if (streams.length > 0) {
-                    const seenServers = new Set();
-                    const uniqueStreams = [];
-
-                    streams.sort((a, b) => {
-                        const score = (s) => {
-                            if(s.includes('G-Direct') || s.includes('Instant')) return 3;
-                            if(s.includes('10Gbps')) return 2;
-                            if(s.includes('Pixel')) return 1;
-                            return 0;
-                        };
-                        return score(b.server) - score(a.server);
-                    });
-
-                    streams.forEach(stream => {
-                        const cleanName = stream.server.trim();
-                        if (!seenServers.has(cleanName)) {
-                            seenServers.add(cleanName);
-                            uniqueStreams.push(stream);
-                        }
-                    });
-
-                    spinner.style.display = 'none';
-                    statusIcon.style.display = 'block';
-                    updateStatus('success', 'Ready to download');
+                document.getElementById('spinner').style.display = 'none';
+                
+                if(data.streams && data.streams.length > 0) {
+                    document.getElementById('status').innerText = data.title || "Ready";
+                    const container = document.getElementById('links');
                     
-                    bestContainer.innerHTML = createCard(uniqueStreams[0], true);
-
-                    if(uniqueStreams.length > 1) {
-                        altList.innerHTML = uniqueStreams.slice(1).map(s => createCard(s)).join('');
-                    } else {
-                        showAltBtn.style.display = 'none';
-                    }
-
-                    resultsArea.classList.add('show');
-
+                    data.streams.forEach((s, i) => {
+                        const isBest = s.server.includes('10Gbps') || s.server.includes('G-Direct');
+                        container.innerHTML += `
+                        <div class="link-card ${isBest ? 'best' : ''}" onclick="openLink('${s.link}')">
+                            <i class="fas fa-download"></i>
+                            <div style="flex:1; text-align:left;">
+                                <div class="server-name">${s.server}</div>
+                                <div style="font-size:12px; color:#888;">${s.type.toUpperCase()}</div>
+                            </div>
+                            <i class="fas fa-chevron-right"></i>
+                        </div>`;
+                    });
                 } else {
-                    updateStatus('error', 'No links found');
-                    spinner.style.display = 'none';
+                    document.getElementById('status').innerText = "No links found";
                 }
-
-            } catch (error) {
-                console.error(error);
-                updateStatus('error', 'Extraction Failed');
-                spinner.style.display = 'none';
+            } catch(e) {
+                document.getElementById('status').innerText = "Error";
+                document.getElementById('spinner').style.display = 'none';
             }
         }
-
-        function updateStatus(type, msg) {
-            statusPill.className = `status-pill ${type}`;
-            if(type === 'error') {
-                statusPill.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${msg}`;
-            } else {
-                statusPill.innerHTML = `<i class="fas fa-check-circle"></i> ${msg}`;
-            }
-        }
-
         init();
     </script>
 </body>
