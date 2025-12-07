@@ -1,180 +1,127 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const headers = require('../headers');
-
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-const decodeBase64 = (str) => {
-    try {
-        return Buffer.from(str, 'base64').toString('utf-8');
-    } catch (e) {
-        return '';
-    }
-};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const decodeBase64 = (str) => { try { return Buffer.from(str, 'base64').toString('utf-8'); } catch (e) { return ''; } };
 
 async function nexdriveExtractor(url) {
     try {
-        console.log('🚀 [DEBUG] NexDrive Logic Started for:', url);
+        console.log('🚀 NexDrive:', url);
         const streamLinks = [];
-
-        // --- Step 1: Initial Page Load ---
+        
         const res = await axios.get(url, { headers });
         let $ = cheerio.load(res.data);
-
-        // --- Step 2: Unlock Logic ---
         const scriptContent = $('script:contains("const encoded =")').html();
+        
         if (scriptContent) {
             const match = scriptContent.match(/const\s+encoded\s*=\s*"([^"]+)"/);
-            if (match && match[1]) {
-                const decodedHtml = decodeBase64(match[1]);
-                $ = cheerio.load(decodedHtml);
-                console.log('🔓 [DEBUG] MobileJSR Decoded Successfully!');
-            }
+            if (match && match[1]) $ = cheerio.load(decodeBase64(match[1]));
         }
 
-        // --- Step 3: Find & Process Buttons ---
         const promises = [];
+        const processed = new Set();
 
         $('a').each((i, el) => {
-            const text = $(el).text().trim();
             const href = $(el).attr('href');
-            
-            if (!href || href === '#' || !href.startsWith('http')) return;
+            const text = $(el).text().trim();
+            if(!href || href === '#' || !href.startsWith('http') || processed.has(href)) return;
+            processed.add(href);
 
-            // === A. G-Direct Processing ===
+            // G-Direct
             if (text.includes('G-Direct') || text.includes('Instant') || href.includes('fastdl.lat')) {
-                const p = (async () => {
-                    console.log('⚡ [DEBUG] Found G-Direct:', href);
+                promises.push((async () => {
                     try {
-                        const fastRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
-                        const $$ = cheerio.load(fastRes.data);
-                        const finalLink = $$('a.btn-primary').attr('href') || 
-                                          $$('a:contains("Download Now")').attr('href');
-                        
-                        if (finalLink) {
-                            streamLinks.push({ server: 'G-Direct [Instant]', link: finalLink, type: 'mkv' });
-                        }
-                    } catch (e) { console.log('❌ G-Direct Error:', e.message); }
-                })();
-                promises.push(p);
+                        const fRes = await axios.get(href, { headers: { ...headers, 'Referer': url } });
+                        const $$ = cheerio.load(fRes.data);
+                        const fl = $$('a.btn-primary').attr('href') || $$('a:contains("Download Now")').attr('href');
+                        if (fl) streamLinks.push({ server: 'G-Direct [Instant]', link: fl, type: 'mkv' });
+                    } catch(e) {}
+                })());
             }
 
-            // === B. M-Cloud Processing ===
+            // M-Cloud
             if (text.includes('M-Cloud') || href.includes('mcloud.mom')) {
-                const p = (async () => {
-                    console.log('☁️ [DEBUG] Found M-Cloud Link:', href);
+                promises.push((async () => {
                     try {
-                        // 1. Visit M-Cloud Page
                         const mRes = await axios.get(href, { headers });
                         const mHtml = mRes.data;
                         const $m = cheerio.load(mHtml);
-                        
-                        // 2. Find Inputs & Submit Form (Generate Link)
                         const formData = new URLSearchParams();
-                        let inputCount = 0;
-                        const inputRegex = /<input[^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']/g;
-                        let match;
-                        while ((match = inputRegex.exec(mHtml)) !== null) {
-                            formData.append(match[1], match[2]);
-                            inputCount++;
-                        }
-
-                        // Also check script for direct redirect (Fallback)
-                        let finalUrl = null;
+                        let count = 0;
                         
-                        if (inputCount > 0) {
-                            console.log('⏳ [DEBUG] Waiting 3.5s for M-Cloud Timer...');
-                            await sleep(3500);
+                        const regex = /<input[^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']/g;
+                        let match;
+                        while ((match = regex.exec(mHtml)) !== null) { formData.append(match[1], match[2]); count++; }
 
-                            const mPostRes = await axios.post(href, formData, {
-                                headers: {
-                                    ...headers,
-                                    'Content-Type': 'application/x-www-form-urlencoded',
-                                    'Referer': href,
-                                    'Origin': new URL(href).origin,
-                                    'Cookie': mRes.headers['set-cookie'] ? mRes.headers['set-cookie'].join('; ') : ''
-                                },
+                        let finalUrl = null;
+                        if(count > 0) {
+                            await sleep(3500);
+                            const pRes = await axios.post(href, formData, {
+                                headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': href, 'Cookie': mRes.headers['set-cookie']?.join('; ') },
                                 maxRedirects: 5
                             });
-                            finalUrl = mPostRes.request.res.responseUrl;
+                            finalUrl = pRes.request.res.responseUrl;
                         } else {
-                             const scriptMatch = mHtml.match(/var\s+url\s*=\s*['"]([^'"]+)['"]/) || 
-                                                 mHtml.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/);
-                             if(scriptMatch) finalUrl = scriptMatch[1];
+                            const sc = mHtml.match(/var\s+url\s*=\s*['"]([^'"]+)['"]/) || mHtml.match(/location\.href\s*=\s*['"]([^'"]+)['"]/);
+                            if(sc) finalUrl = sc[1];
                         }
 
-                        if (finalUrl) {
-                            console.log('✅ M-Cloud Unlocked. Parsing GamerXYT...');
+                        if(finalUrl) {
+                            const gRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
+                            const $g = cheerio.load(gRes.data);
+                            const btns = $g('a.btn, .btn-danger, .btn-success');
                             
-                            // 3. Extract Links from GamerXYT
-                            // Need to fetch again if obtained via script, or parse if via POST
-                            let $f;
-                            if(inputCount > 0) {
-                                // We already have data from POST response, but re-fetching ensures clean state or if POST returned a redirect body
-                                // Actually, axios follows redirect, so mPostRes.data is the final page
-                                // BUT, let's re-fetch to be safe or just use data if valid
-                                const gamerRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
-                                $f = cheerio.load(gamerRes.data);
-                            } else {
-                                const gamerRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': href } });
-                                $f = cheerio.load(gamerRes.data);
-                            }
-
-                            const finalButtons = $f('a.btn, .btn-danger, .btn-success, .btn-primary, .download-link');
-                            const innerPromises = [];
-
-                            finalButtons.each((k, btn) => {
-                                const bLink = $f(btn).attr('href');
-                                let bText = $f(btn).text().trim();
-                                
-                                if (bLink && bLink.startsWith('http')) {
-                                    innerPromises.push((async () => {
-                                        let serverName = bText.replace(/Download|\[|\]|Server|:| /g, ' ').trim() || 'M-Cloud Server';
-                                        let finalLink = bLink;
-
-                                        // --- FIX: 10Gbps / HubCDN Resolver ---
-                                        if (bText.includes('10Gbps') || bLink.includes('hubcdn') || bLink.includes('carnewz')) {
+                            const innerP = [];
+                            btns.each((k, b) => {
+                                const bLink = $g(b).attr('href');
+                                let bText = $g(b).text().trim().replace(/Download|\[|\]|Server|:| /g, ' ').trim() || 'Cloud';
+                                if(bLink && bLink.startsWith('http')) {
+                                    innerP.push((async () => {
+                                        let fl = bLink;
+                                        // 10Gbps / HubCDN Fix
+                                        if(bText.includes('10Gbps') || bLink.includes('hubcdn') || bLink.includes('carnewz')) {
                                             try {
-                                                const hubRes = await axios.get(bLink, { 
-                                                    headers: { ...headers, 'Referer': finalUrl },
-                                                    maxRedirects: 5
-                                                });
-                                                const hubHtml = hubRes.data;
-                                                const hubFinalUrl = hubRes.request.res.responseUrl;
-
-                                                if (hubFinalUrl.includes('?url=')) {
-                                                    finalLink = decodeURIComponent(hubFinalUrl.split('?url=')[1].split('&')[0]);
-                                                } else {
-                                                    const googleRegex = /https:\/\/video-downloads\.googleusercontent\.com\/[^"'\s<>;)]+/g;
-                                                    const matches = hubHtml.match(googleRegex);
-                                                    if (matches && matches.length > 0) {
-                                                         finalLink = matches.reduce((a, b) => a.length > b.length ? a : b).replace(/\\/g, '');
-                                                    }
+                                                const hRes = await axios.get(bLink, { headers: { ...headers, 'Referer': finalUrl } });
+                                                const matches = hRes.data.match(/https:\/\/video-downloads\.googleusercontent\.com\/[^"'\s<>;)]+/g);
+                                                if(matches) { fl = matches.reduce((a, b) => a.length > b.length ? a : b).replace(/\\/g, ''); bText = 'Server : 10Gbps'; }
+                                                else if(hRes.request.res.responseUrl.includes('?url=')) {
+                                                     fl = decodeURIComponent(hRes.request.res.responseUrl.split('?url=')[1].split('&')[0]); bText = 'Server : 10Gbps';
                                                 }
-                                                serverName = 'Server: 10Gbps';
-                                            } catch(err) {}
+                                            } catch(e){}
                                         }
-
-                                        // --- Standard Redirects ---
-                                        else if (bLink.includes('boblover') || bLink.includes('hubcloud') || bLink.includes('vcloud')) {
+                                        // Resolve
+                                        else if(bLink.includes('boblover') || bLink.includes('hubcloud')) {
                                             try {
-                                                const headRes = await axios.head(bLink, { 
-                                                    headers: { ...headers, 'Referer': finalUrl },
-                                                    maxRedirects: 5,
-                                                    validateStatus: (s) => s < 400
-                                                });
-                                                const resolved = headRes.request.res.responseUrl || bLink;
-                                                finalLink = resolved.split('link=')?.[1] || resolved;
-                                                try { finalLink = decodeURIComponent(finalLink); } catch(e){}
-                                            } catch (e) {}
+                                                const hr = await axios.head(bLink, { headers: { ...headers, 'Referer': finalUrl }, validateStatus: s=>s<400 });
+                                                const r = hr.request.res.responseUrl;
+                                                fl = r.split('link=')?.[1] || r;
+                                                try { fl = decodeURIComponent(fl); } catch(e){}
+                                            } catch(e){}
                                         }
+                                        if(fl.includes('pixeld')) {
+                                            bText = 'PixelDrain';
+                                            if(!fl.includes('api')) fl = `https://pixeldrain.com/api/file/${fl.split('/').pop()}?download`;
+                                        }
+                                        if(!fl.includes('t.me')) streamLinks.push({ server: bText, link: fl, type: 'mkv' });
+                                    })());
+                                }
+                            });
+                            await Promise.all(innerP);
+                        }
+                    } catch(e) {}
+                })());
+                promises.push(p);
+            }
+        });
 
-                                        // --- PixelDrain Fix ---
-                                        if (finalLink.includes('pixeld')) {
-                                            serverName = 'PixelDrain';
-                                            if (!finalLink.includes('api')) {
-                                                const id = finalLink.split('/').pop();
-                                                finalLink = `https://pixeldrain.com/api/file/${id}?download`;
+        await Promise.all(promises);
+        const uniqueStreams = Array.from(new Set(streamLinks.map(a => a.link))).map(link => streamLinks.find(a => a.link === link));
+        uniqueStreams.sort((a, b) => (a.server.includes('10Gbps') ? -1 : a.server.includes('G-Direct') ? -1 : 1));
+        
+        return { title: $('title').text().trim(), streams: uniqueStreams };
+    } catch (e) { return { title: 'Error', streams: [] }; }
+}
+module.exports = nexdriveExtractor;
                                             }
                                         }
 
