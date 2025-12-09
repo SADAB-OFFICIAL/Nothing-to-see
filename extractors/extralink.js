@@ -6,117 +6,137 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function extralinkExtractor(url) {
     try {
-        console.log('🚀 [DEBUG] ExtraLink Logic Started for:', url);
+        console.log('🚀 [DEBUG] ExtraLink High Alert Started for:', url);
         const streamLinks = [];
 
-        // --- Step 1: Initial Page Load (GET) ---
+        // --- Step 1: Initial Page Load ---
         const res = await axios.get(url, { headers });
         const html = res.data;
-        const $ = cheerio.load(html);
+        let $ = cheerio.load(html);
+        
+        console.log('📄 [DEBUG] Page Title:', $('title').text().trim());
 
-        // Check if page loaded
-        console.log('📄 Page Title:', $('title').text().trim());
+        // --- 🚨 HIGH ALERT DEBUGGING 🚨 ---
+        
+        // 1. Check if "Generate Download Link" text exists in raw HTML
+        const btnTextIndex = html.indexOf('Generate Download Link');
+        
+        if (btnTextIndex !== -1) {
+            console.log('✅ [DEBUG] "Generate Download Link" text FOUND in HTML!');
+            // Dump 300 characters around the button to see the tag structure
+            const start = Math.max(0, btnTextIndex - 150);
+            const end = Math.min(html.length, btnTextIndex + 150);
+            console.log('🔍 [HTML CONTEXT]:', html.substring(start, end));
+        } else {
+            console.log('❌ [DEBUG] "Generate Download Link" text NOT FOUND in HTML. (Cloudflare/JS Rendering?)');
+        }
 
-        // --- Step 2: Handle "Generate Download Link" (Form Parsing) ---
-        const formData = new URLSearchParams();
-        let inputCount = 0;
-
-        // Scrape ALL hidden inputs
-        $('input').each((i, el) => {
-            const name = $(el).attr('name');
-            const value = $(el).attr('value');
-            if (name) {
-                formData.append(name, value || '');
-                inputCount++;
-                // console.log(`   Input: ${name} = ${value}`); // Debug inputs
-            }
+        // 2. Scan for ANY Form
+        const forms = $('form');
+        console.log(`🔍 [DEBUG] Forms found: ${forms.length}`);
+        forms.each((i, el) => {
+            console.log(`   [Form ${i}] Action: ${$(el).attr('action')} | Method: ${$(el).attr('method')}`);
         });
 
-        console.log(`🔍 Found ${inputCount} hidden inputs.`);
+        // 3. Scan for Buttons/Links
+        const genBtn = $('a:contains("Generate"), button:contains("Generate"), input[value*="Generate"]');
+        console.log(`🔍 [DEBUG] Generate Buttons found via Cheerio: ${genBtn.length}`);
+        
+        if (genBtn.length > 0) {
+            console.log('   Tag:', genBtn.prop('tagName'));
+            console.log('   Href:', genBtn.attr('href'));
+            console.log('   Onclick:', genBtn.attr('onclick'));
+            console.log('   ID:', genBtn.attr('id'));
+            console.log('   Class:', genBtn.attr('class'));
+        }
 
-        // Agar inputs mile, toh POST request maaro
-        if (inputCount > 0) {
-            console.log('⏳ Waiting 3 seconds (Timer simulation)...');
-            await sleep(3000);
+        // --- ATTEMPT RECOVERY (Based on common patterns) ---
+        
+        let finalUrl = null;
 
-            console.log('🔓 Sending POST request (Generate Link)...');
+        // Strategy A: Direct Link in Href
+        if (genBtn.attr('href') && genBtn.attr('href') !== '#') {
+            finalUrl = genBtn.attr('href');
+            console.log('👉 Strategy A: Found Direct Link');
+        }
+        
+        // Strategy B: Form Submission (Even if inputs missing)
+        else if (forms.length > 0) {
+            console.log('👉 Strategy B: Trying Form Submit (Blind)...');
+            const targetForm = forms.first();
+            const action = targetForm.attr('action') || url;
+            // Sometimes token is in the action URL itself
+            const formData = new URLSearchParams();
             
-            const postRes = await axios.post(url, formData, {
-                headers: {
-                    ...headers,
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Referer': url,
-                    'Origin': new URL(url).origin,
-                    'Cookie': res.headers['set-cookie'] ? res.headers['set-cookie'].join('; ') : ''
-                },
-                maxRedirects: 5 // Follow redirect to /s/go/...
+            // Try grabbing any input we see
+            $('input').each((i, el) => {
+                const name = $(el).attr('name');
+                const val = $(el).attr('value');
+                if (name) formData.append(name, val || '');
             });
-
-            const finalUrl = postRes.request.res.responseUrl;
-            console.log('✅ Redirected to:', finalUrl);
-
-            // --- Step 3: Handle Second Page (Direct Download) ---
-            const finalHtml = postRes.data;
-            const $f = cheerio.load(finalHtml);
-
-            // Try to find the "Direct Download" button logic
-            // ExtraLink aksar ek API call karta hai button click par
-            // Hum script mein tokens dhoondhenge
             
-            // Logic A: Find explicit links
-            const finalLinks = new Set();
-            
-            $f('a').each((i, el) => {
-                const href = $f(el).attr('href');
-                const text = $f(el).text().trim();
-                
-                if (href && href.startsWith('http')) {
-                    // Check for worker links or direct file links
-                    if (href.includes('workers.dev') || href.includes('googleusercontent') || href.includes('pixeldrain')) {
-                        finalLinks.add({ link: href, type: 'Direct' });
-                    }
-                    // Capture other drive links
-                    if (text.includes('Drive') || text.includes('HubCloud') || text.includes('Instant')) {
-                         finalLinks.add({ link: href, type: text });
-                    }
-                }
-            });
-
-            // Logic B: Script Variable Extraction (For 'Direct Download' button)
-            // Aksar link `var url = '...'` mein hota hai ya `window.open`
-            const scriptMatch = finalHtml.match(/window\.open\(['"]([^'"]+)['"]\)/) || 
-                                finalHtml.match(/location\.href\s*=\s*['"]([^'"]+)['"]/) ||
-                                finalHtml.match(/https:\/\/[^"']+\.workers\.dev\/[^"']+/); // Direct Regex for workers
-
-            if (scriptMatch) {
-                const extracted = scriptMatch[1] || scriptMatch[0]; // Regex might return full match at 0
-                console.log('⚡ Found Script Link:', extracted);
-                finalLinks.add({ link: extracted, type: 'G-Direct [Instant]' });
+            // Add manual token if inputs failed but we suspect it's needed
+            if (!formData.toString()) {
+                // Try Regex for token
+                const tokenMatch = html.match(/name="([^"]+)"\s+value="([^"]+)"/);
+                if (tokenMatch) formData.append(tokenMatch[1], tokenMatch[2]);
             }
 
-            // Convert Set to Stream Array
-            finalLinks.forEach(item => {
-                if (!item.link.includes('t.me') && !item.link.includes('telegram')) {
-                    streamLinks.push({
-                        server: item.type.replace(/Download|\[|\]/g, '').trim() || 'ExtraLink Server',
-                        link: item.link,
-                        type: 'mkv'
-                    });
-                }
-            });
+            await sleep(2500); // Timer wait
 
-            // Special Check: Agar "Direct Download" button HTML mein hai par link JS se ban raha hai
-            // Hum page ka Token nikaal kar manual API call try kar sakte hain (Advanced)
-            // Filhal Script Regex (Logic B) usually kaam kar jata hai.
+            try {
+                const postRes = await axios.post(action, formData, {
+                    headers: {
+                        ...headers,
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Referer': url,
+                        'Origin': new URL(url).origin,
+                        'Cookie': res.headers['set-cookie'] ? res.headers['set-cookie'].join('; ') : ''
+                    },
+                    maxRedirects: 5
+                });
+                finalUrl = postRes.request.res.responseUrl;
+                console.log('✅ POST Success. Landed on:', finalUrl);
+            } catch (e) {
+                console.log('❌ POST Failed:', e.message);
+            }
+        }
 
-        } else {
-            console.log('❌ No inputs found. Page structure changed or Cloudflare blocked.');
+        // --- FINAL EXTRACTION (If we reached Page 2) ---
+        if (finalUrl) {
+            // Hum maan ke chal rahe hain ki hum /s/go/ page par hain
+            const finalRes = await axios.get(finalUrl, { headers: { ...headers, 'Referer': url } });
+            const finalHtml = finalRes.data;
+            const $f = cheerio.load(finalHtml);
+
+            console.log('📄 [DEBUG] Final Page Title:', $f('title').text().trim());
+
+            // Check for Workers link (Screenshot 3 link)
+            const scriptMatch = finalHtml.match(/https:\/\/[^"']+\.workers\.dev\/[^"']+/);
+            
+            if (scriptMatch) {
+                console.log('⚡ [SUCCESS] Found Worker Link via Regex:', scriptMatch[0]);
+                streamLinks.push({
+                    server: 'G-Direct [Instant]',
+                    link: scriptMatch[0],
+                    type: 'mkv'
+                });
+            } else {
+                 // Try parsing buttons on final page
+                 $f('a').each((i, el) => {
+                     const href = $(el).attr('href');
+                     const text = $(el).text();
+                     if (href && (href.includes('workers.dev') || href.includes('drive.google'))) {
+                         streamLinks.push({ server: text.trim() || 'Direct Link', link: href, type: 'mkv' });
+                     }
+                 });
+            }
         }
 
         return streamLinks;
 
     } catch (error) {
-        console.error('❌ ExtraLink Error:', error.message);
+        console.error('❌ ExtraLink Critical Error:', error.message);
         return [];
     }
 }
