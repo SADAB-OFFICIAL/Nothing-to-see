@@ -1,12 +1,16 @@
 const express = require('express');
 const cors = require('cors');
-const path = require('path'); // <--- New Import for File Paths
+const path = require('path');
 const NodeCache = require('node-cache');
 
 // --- Import Extractors ---
 const hubcloudExtracter = require('./extractors/hubcloud');
 const gdflixExtractor = require('./extractors/gdflix');
 const nexdriveExtractor = require('./extractors/nexdrive');
+const extralinkExtractor = require('./extractors/extralink'); // 🆕 New Added
+
+// --- Import Utils ---
+const checkStreams = require('./utils/checker');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,8 +25,7 @@ const cache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
 app.use(cors());
 app.use(express.json());
 
-// 📂 SERVE STATIC FILES (Public Folder)
-// Isse aapka download.html load hoga
+// 📂 SERVE STATIC FILES (Public Folder for Download UI)
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Middleware: API Key Checker ---
@@ -61,7 +64,7 @@ async function processRequest(url, extractorFn, res) {
             // Old format (Just array) -> Wrap it
             responseObj = {
                 source: 'live',
-                title: "Unknown Title", // Can be updated in other extractors later
+                title: "Unknown Title", 
                 streams: result
             };
         } else {
@@ -73,7 +76,13 @@ async function processRequest(url, extractorFn, res) {
             };
         }
 
-        // 4. Save to Cache & Send
+        // 4. Dead Link Check (Strict Mode)
+        if (responseObj.streams.length > 0) {
+            // Note: Enable this line if you want to filter dead links
+            // responseObj.streams = await checkStreams(responseObj.streams);
+        }
+
+        // 5. Save to Cache & Send
         if (responseObj.streams && responseObj.streams.length > 0) {
             cache.set(url, responseObj);
             console.log(`💾 Saved to Cache: ${url}`);
@@ -95,6 +104,12 @@ app.get('/', (req, res) => {
     res.json({ 
         status: 'Online 🟢', 
         message: 'Universal Extractor API Ready',
+        endpoints: {
+            hubcloud: '/hubcloud',
+            gdflix: '/gdflix',
+            nexdrive: '/nexdrive',
+            extralink: '/extralink'
+        },
         ui: '/download.html' 
     });
 });
@@ -114,11 +129,16 @@ app.get('/nexdrive', authenticate, async (req, res) => {
     await processRequest(req.query.url, nexdriveExtractor, res);
 });
 
+// 4. ExtraLink Route (NEW)
+app.get('/extralink', authenticate, async (req, res) => {
+    await processRequest(req.query.url, extralinkExtractor, res);
+});
+
 // --- Start Server ---
 app.listen(PORT, () => {
     console.log(`=================================================`);
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📂 UI Available at: http://localhost:${PORT}/download.html`);
-    console.log(`🔑 API Key: ${API_SECRET}`);
+    console.log(`🔑 API Key Configured`);
     console.log(`=================================================`);
 });
