@@ -9,64 +9,109 @@ async function extralinkExtractor(url) {
         console.log('🚀 [DEBUG] ExtraLink Logic Started for:', url);
         const streamLinks = [];
 
-        // --- Step 1: Initial Page Load ---
+        // --- Step 1: Initial Page Load (GET) ---
         const res = await axios.get(url, { headers });
-        let $ = cheerio.load(res.data);
-        
-        console.log('📄 [DEBUG] Page Title:', $('title').text().trim());
-
-        // --- Step 2: Handle "Generate Download Link" ---
-        // Check for Form or Button
-        const form = $('form');
-        const genBtn = $('a:contains("Generate Download Link"), button:contains("Generate Download Link")');
-
-        let nextUrl = null;
-
-        if (form.length > 0) {
-            console.log('🔐 [DEBUG] Found Form. Attempting Submit...');
-            // ... (Form submission logic will go here if needed)
-            // But let's check logs first to see if it's a form or just a link
-            console.log('   Form Action:', form.attr('action'));
-        } 
-        
-        if (genBtn.length > 0) {
-             console.log('🔘 [DEBUG] Found Generate Button');
-             console.log('   Href:', genBtn.attr('href'));
-             console.log('   OnClick:', genBtn.attr('onclick'));
-             
-             // If it's a direct link (like in screenshot 2 URL structure)
-             // Screenshot 2 URL: /s/go/...
-             // Let's assume the button takes us there.
-        }
-
-        // --- Simulate going to the /s/go/ page manually for now ---
-        // Kyunki hume pata hai pattern: /s/ -> /s/go/ (URL badal raha hai screenshot mein)
-        // Screenshot 1 URL: https://new3.extralink.ink/s/1c266477/
-        // Screenshot 2 URL: https://new3.extralink.ink/s/go/MWMyNjY0Nz...
-        
-        // Hum pehle page ko analyze karenge ki wo /s/go/ wala link kaise generate kar raha hai.
-        
-        console.log('-------- HTML DUMP (Generate Button Area) --------');
-        // Dump HTML around "Generate Download Link"
         const html = res.data;
-        const idx = html.indexOf('Generate Download Link');
-        if (idx !== -1) {
-            console.log(html.substring(idx - 200, idx + 200));
-        }
-        console.log('--------------------------------------------------');
+        const $ = cheerio.load(html);
 
-        // --- Try to find the API endpoint for "Direct Download" ---
-        // Screenshot 3 dikha raha hai "Processing your request..." toast.
-        // Ye tabhi hota hai jab koi JS function call hota hai.
-        // Hume script tags dhoondhne honge.
+        // Check if page loaded
+        console.log('📄 Page Title:', $('title').text().trim());
 
-        console.log('🔍 [DEBUG] Scanning Scripts for API Logic...');
-        $('script').each((i, el) => {
-            const content = $(el).html();
-            if (content && (content.includes('Direct Download') || content.includes('/api') || content.includes('POST'))) {
-                console.log(`📜 Script ${i} Match:`, content.substring(0, 500)); // Log first 500 chars
+        // --- Step 2: Handle "Generate Download Link" (Form Parsing) ---
+        const formData = new URLSearchParams();
+        let inputCount = 0;
+
+        // Scrape ALL hidden inputs
+        $('input').each((i, el) => {
+            const name = $(el).attr('name');
+            const value = $(el).attr('value');
+            if (name) {
+                formData.append(name, value || '');
+                inputCount++;
+                // console.log(`   Input: ${name} = ${value}`); // Debug inputs
             }
         });
+
+        console.log(`🔍 Found ${inputCount} hidden inputs.`);
+
+        // Agar inputs mile, toh POST request maaro
+        if (inputCount > 0) {
+            console.log('⏳ Waiting 3 seconds (Timer simulation)...');
+            await sleep(3000);
+
+            console.log('🔓 Sending POST request (Generate Link)...');
+            
+            const postRes = await axios.post(url, formData, {
+                headers: {
+                    ...headers,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Referer': url,
+                    'Origin': new URL(url).origin,
+                    'Cookie': res.headers['set-cookie'] ? res.headers['set-cookie'].join('; ') : ''
+                },
+                maxRedirects: 5 // Follow redirect to /s/go/...
+            });
+
+            const finalUrl = postRes.request.res.responseUrl;
+            console.log('✅ Redirected to:', finalUrl);
+
+            // --- Step 3: Handle Second Page (Direct Download) ---
+            const finalHtml = postRes.data;
+            const $f = cheerio.load(finalHtml);
+
+            // Try to find the "Direct Download" button logic
+            // ExtraLink aksar ek API call karta hai button click par
+            // Hum script mein tokens dhoondhenge
+            
+            // Logic A: Find explicit links
+            const finalLinks = new Set();
+            
+            $f('a').each((i, el) => {
+                const href = $f(el).attr('href');
+                const text = $f(el).text().trim();
+                
+                if (href && href.startsWith('http')) {
+                    // Check for worker links or direct file links
+                    if (href.includes('workers.dev') || href.includes('googleusercontent') || href.includes('pixeldrain')) {
+                        finalLinks.add({ link: href, type: 'Direct' });
+                    }
+                    // Capture other drive links
+                    if (text.includes('Drive') || text.includes('HubCloud') || text.includes('Instant')) {
+                         finalLinks.add({ link: href, type: text });
+                    }
+                }
+            });
+
+            // Logic B: Script Variable Extraction (For 'Direct Download' button)
+            // Aksar link `var url = '...'` mein hota hai ya `window.open`
+            const scriptMatch = finalHtml.match(/window\.open\(['"]([^'"]+)['"]\)/) || 
+                                finalHtml.match(/location\.href\s*=\s*['"]([^'"]+)['"]/) ||
+                                finalHtml.match(/https:\/\/[^"']+\.workers\.dev\/[^"']+/); // Direct Regex for workers
+
+            if (scriptMatch) {
+                const extracted = scriptMatch[1] || scriptMatch[0]; // Regex might return full match at 0
+                console.log('⚡ Found Script Link:', extracted);
+                finalLinks.add({ link: extracted, type: 'G-Direct [Instant]' });
+            }
+
+            // Convert Set to Stream Array
+            finalLinks.forEach(item => {
+                if (!item.link.includes('t.me') && !item.link.includes('telegram')) {
+                    streamLinks.push({
+                        server: item.type.replace(/Download|\[|\]/g, '').trim() || 'ExtraLink Server',
+                        link: item.link,
+                        type: 'mkv'
+                    });
+                }
+            });
+
+            // Special Check: Agar "Direct Download" button HTML mein hai par link JS se ban raha hai
+            // Hum page ka Token nikaal kar manual API call try kar sakte hain (Advanced)
+            // Filhal Script Regex (Logic B) usually kaam kar jata hai.
+
+        } else {
+            console.log('❌ No inputs found. Page structure changed or Cloudflare blocked.');
+        }
 
         return streamLinks;
 
