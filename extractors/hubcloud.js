@@ -4,26 +4,28 @@ const headers = require("../headers");
 
 // --- CONFIGURATION ---
 const TOKEN_SOURCE = "https://vcloud.zip/hr17ehaeym7rza9";
-const PROXY_URL = "https://proxy.vlyx.workers.dev"; // Agar proxy chahiye to use karein
 const BASE_GAMER_URL = "https://gamerxyt.com/hubcloud.php";
 
-// --- 1. TOKEN EXTRACTOR (Magic Logic) ---
+// --- 1. TOKEN EXTRACTOR (Debug Mode) ---
 async function getFreshToken() {
     try {
-        console.log("🔄 Generating Fresh Token...");
-        // Random timestamp to avoid caching
+        console.log("🔄 [TOKEN] Generating Fresh Token...");
         const target = `${TOKEN_SOURCE}?t=${Date.now()}`;
         
-        // Direct fetch ya Proxy ke through
         const { data } = await axios.get(target, { 
             headers: { ...headers, "Cache-Control": "no-cache" } 
         });
 
-        // Regex se token nikalna
         const match = data.match(/token=([^&"'\s<>]+)/);
-        return match ? match[1] : null;
+        if (match) {
+            console.log("✅ [TOKEN] Extracted:", match[1].substring(0, 10) + "...");
+            return match[1];
+        } else {
+            console.error("❌ [TOKEN] Regex Failed. Response Preview:", data.substring(0, 200));
+            return null;
+        }
     } catch (e) {
-        console.error("Token Error:", e.message);
+        console.error("❌ [TOKEN] Network Error:", e.message);
         return null;
     }
 }
@@ -31,114 +33,115 @@ async function getFreshToken() {
 // --- 2. MAIN EXTRACTOR ---
 module.exports = async function (url) {
     try {
-        console.log("🔍 Processing HubCloud:", url);
+        console.log("\n🚀 [START] Processing HubCloud URL:", url);
         
         // Step 1: HubCloud Page Load
+        console.log("⏳ [STEP 1] Fetching HubCloud Page...");
         const { data: hubData } = await axios.get(url, { headers });
         const $ = cheerio.load(hubData);
         
-        // ID Nikalna (URL se)
-        // https://hubcloud.run/drive/xyz123 -> xyz123
         const hubId = url.split('/').pop();
+        console.log("ℹ️ [INFO] Extracted HubID:", hubId);
 
-        // Step 2: Try Direct Method First (Current Logic)
+        // Try Direct Method
         const vCloudLink = $('a:contains("Download"), a:contains("View")').attr("href");
-        
-        if (vCloudLink) {
-            console.log("✅ Found vCloud Link, trying direct scrape...");
-            try {
-                const result = await scrapeFinalLinks(vCloudLink);
-                if (result.streams.length > 0) return result;
-            } catch (err) {
-                console.log("⚠️ Direct scrape failed, switching to Token System...");
-            }
-        }
+        console.log("ℹ️ [INFO] Found Direct vCloud Link:", vCloudLink || "NONE");
 
-        // Step 3: FALLBACK - Token System (Agar direct fail ho ya link na mile)
-        console.log("🛡️ Activating Token Bypass...");
+        // --- TOKEN SYSTEM ACTIVATION ---
+        console.log("🛡️ [STEP 2] Activating Token Bypass System...");
         const token = await getFreshToken();
         
-        if (!token) throw new Error("Failed to generate token");
+        if (!token) throw new Error("Token generation failed");
 
         // Construct GamerXYT Link
-        // host=hubcloud & id={HUB_ID} & token={TOKEN}
         const magicUrl = `${BASE_GAMER_URL}?host=hubcloud&id=${hubId}&token=${token}`;
-        console.log("🔗 Generated Magic URL:", magicUrl);
+        console.log("🔗 [STEP 3] Generated Magic URL:", magicUrl);
 
-        // Step 4: Scrape the Magic URL (Redirection Handling)
-        // GamerXYT redirects check karne padenge
+        // Step 4: Scrape the Magic URL
+        console.log("⏳ [STEP 4] Scraping Magic URL & Following Redirects...");
         const finalPageHtml = await followRedirectsAndGetHtml(magicUrl);
+        
+        if (!finalPageHtml) {
+             throw new Error("Final Page HTML was empty or null");
+        }
+
+        console.log("✅ [STEP 5] Parsing Final HTML for Streams...");
         return extractStreamsFromHtml(finalPageHtml);
 
     } catch (e) {
-        console.error("HubCloud Extractor Error:", e.message);
-        return { error: "Failed to extract links" };
+        console.error("❌ [CRITICAL ERROR]:", e.message);
+        if (e.response) {
+            console.error("   > Status:", e.response.status);
+            console.error("   > Headers:", JSON.stringify(e.response.headers));
+        }
+        return { error: "Failed to extract links", details: e.message };
     }
 };
 
 // --- HELPERS ---
 
-// Helper: Final Page tak pahunchna (Redirects handle karna)
 async function followRedirectsAndGetHtml(initialUrl) {
     try {
-        // GamerXYT aksar JS redirection use karta hai, to humein 'verified' link dhoondna hoga
         const { data } = await axios.get(initialUrl, { headers });
         
-        // Check for "hubcloud.php?" link inside HTML (Tokenized Redirect)
+        // Check for JS Redirect "hubcloud.php?"
         const regex = /(?:https:\/\/gamerxyt\.com\/)?hubcloud\.php\?[^"']+/g;
         const match = data.match(regex);
         
-        let targetUrl = initialUrl;
         if (match) {
-            // Sabse lamba link usually sahi hota hai
             let bestMatch = match.reduce((a, b) => a.length > b.length ? a : b);
             if (!bestMatch.startsWith('http')) bestMatch = `https://gamerxyt.com/${bestMatch}`;
-            targetUrl = bestMatch;
+            
+            console.log("↪️ [REDIRECT] Found JS Redirect to:", bestMatch);
+            const { data: finalData } = await axios.get(bestMatch, { headers });
+            return finalData;
+        } else {
+            console.log("ℹ️ [INFO] No JS Redirect found, assuming current page is Final.");
+            return data;
         }
-
-        console.log("🚀 Scraping Final Page:", targetUrl);
-        const { data: finalData } = await axios.get(targetUrl, { headers });
-        return finalData;
-
     } catch (e) {
+        console.error("❌ [REDIRECT ERROR]:", e.message);
         throw e;
     }
 }
 
-// Helper: HTML se Links nikalna (Common Logic)
-async function scrapeFinalLinks(url) {
-    const { data } = await axios.get(url, { headers });
-    return extractStreamsFromHtml(data);
-}
-
 function extractStreamsFromHtml(html) {
     const $ = cheerio.load(html);
-    const title = $("title").text().replace("(Movies4u.Foo)", "").trim();
+    let title = $("title").text().replace("(Movies4u.Foo)", "").trim();
+    if (!title) title = "Unknown Title";
+
+    console.log("ℹ️ [INFO] Page Title Extracted:", title);
+
     const streams = [];
 
-    // 1. Direct Links (FSL/Fast)
+    // Debug: Check if buttons exist
+    const successBtns = $(".btn-success").length;
+    const dangerBtns = $(".btn-danger").length;
+    console.log(`ℹ️ [INFO] Buttons Found -> Success: ${successBtns}, Danger: ${dangerBtns}`);
+
     $(".btn-success").each((_, el) => {
         streams.push({ server: "⚡ Fast Cloud (VIP)", link: $(el).attr("href"), type: "DIRECT" });
     });
 
-    // 2. G-Direct (Drive)
     $(".btn-danger").each((_, el) => {
         streams.push({ server: "🚀 G-Direct (10Gbps)", link: $(el).attr("href"), type: "DRIVE" });
     });
+    
+    // Fallback: Check raw links
+    if (streams.length === 0) {
+        console.log("⚠️ [WARN] No buttons found, searching for Raw Links...");
+        const rawMatch = html.match(/href=["'](https?:\/\/(?:drive\.google\.com|hubcloud\.run|workers\.dev|cdn\.fsl)[^"']+)["']/);
+        if (rawMatch) {
+            console.log("✅ [INFO] Found Raw Link:", rawMatch[1]);
+            streams.push({ server: "Fast Server (Fallback)", link: rawMatch[1], type: "DIRECT" });
+        }
+    }
 
-    // 3. Mirrors
-    $(".btn-primary, .btn-warning, .btn-info").each((_, el) => {
-        let name = $(el).text().trim();
-        if(name.toLowerCase().includes('download')) name = "Mirror Server";
-        streams.push({ server: name, link: $(el).attr("href"), type: "MIRROR" });
-    });
+    if (streams.length === 0) {
+        console.error("❌ [ERROR] Parsing finished but NO streams found.");
+    } else {
+        console.log(`✅ [SUCCESS] Extracted ${streams.length} streams.`);
+    }
 
-    // Filter Junk
-    const cleanStreams = streams.filter(s => 
-        !s.link.includes("dgdrive") && 
-        !s.link.includes("login") &&
-        !s.link.includes("plough")
-    );
-
-    return { title, streams: cleanStreams };
+    return { title, streams };
 }
