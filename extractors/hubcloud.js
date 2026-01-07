@@ -6,7 +6,7 @@ const headers = require("../headers");
 const TOKEN_SOURCE = "https://vcloud.zip/hr17ehaeym7rza9";
 const BASE_GAMER_URL = "https://gamerxyt.com/hubcloud.php";
 
-// --- HELPER: Token Generator (Only for HubCloud) ---
+// --- HELPER: Token Generator ---
 async function getFreshToken() {
     try {
         console.log("🔄 [TOKEN] Generating Fresh Token...");
@@ -22,64 +22,76 @@ async function getFreshToken() {
     }
 }
 
+// --- HELPER: Token System Processor ---
+async function processWithToken(id, host = 'hubcloud') {
+    console.log(`🛡️ Activating Token Bypass [Host: ${host}]...`);
+    
+    const token = await getFreshToken();
+    if (!token) throw new Error("Token generation failed");
+
+    // Construct Magic URL
+    const magicUrl = `${BASE_GAMER_URL}?host=${host}&id=${id}&token=${token}`;
+    console.log("🔗 Generated Magic URL:", magicUrl);
+
+    // Scrape Magic URL
+    const finalPageHtml = await followRedirectsAndGetHtml(magicUrl);
+    return extractStreamsFromHtml(finalPageHtml);
+}
+
 // --- MAIN EXTRACTOR ---
 module.exports = async function (url) {
     try {
         console.log("\n🚀 [START] Processing URL:", url);
 
+        // ID Extraction
+        const id = url.split('/').pop();
+
         // ---------------------------------------------------------
-        // 🛑 LOGIC 1: HUBCLOUD (Use Token System - Bypass CF)
+        // 🛑 LOGIC 1: HUBCLOUD (Directly use Token System)
         // ---------------------------------------------------------
         if (url.includes("hubcloud") || url.includes("hubdrive")) {
-            console.log("🛡️ Mode: HubCloud Detected (Activating Token Bypass)");
-            
-            // Step 1: ID Nikalna
-            const hubId = url.split('/').pop();
-            if (!hubId) throw new Error("Invalid HubCloud URL");
-
-            // Step 2: Token Generate Karna
-            const token = await getFreshToken();
-            if (!token) throw new Error("Token generation failed");
-
-            // Step 3: Magic URL Banana
-            const magicUrl = `${BASE_GAMER_URL}?host=hubcloud&id=${hubId}&token=${token}`;
-            console.log("🔗 Generated Magic URL:", magicUrl);
-
-            // Step 4: Scrape Magic URL
-            const finalPageHtml = await followRedirectsAndGetHtml(magicUrl);
-            return extractStreamsFromHtml(finalPageHtml);
+            console.log("🔒 Mode: HubCloud (Cloudflare Detected)");
+            return await processWithToken(id, 'hubcloud');
         } 
         
         // ---------------------------------------------------------
-        // 🟢 LOGIC 2: V-CLOUD (Use Old Direct Scraper - No Token Needed)
+        // 🟢 LOGIC 2: V-CLOUD (Hybrid Strategy)
         // ---------------------------------------------------------
         else {
-            console.log("⚡ Mode: V-Cloud Detected (Direct Scraping)");
+            console.log("⚡ Mode: V-Cloud (Try Direct -> Fallback to Redirect -> Fallback to Token)");
             
-            // Step 1: Direct Page Load
+            // ATTEMPT 1: Direct Scraping
             const { data: vCloudData } = await axios.get(url, { headers });
             const $ = cheerio.load(vCloudData);
             
-            // Check: Agar ye pehle se final page hai (Streams hain)
-            if ($(".btn-success").length > 0 || $(".btn-danger").length > 0) {
+            // Check if we found valid streams directly
+            const directResult = extractStreamsFromHtml(vCloudData, true); // true = silent mode
+            if (directResult.streams && directResult.streams.length > 0) {
                 console.log("✅ Streams found directly on V-Cloud page!");
-                return extractStreamsFromHtml(vCloudData);
+                return directResult;
             }
 
-            // Check: Agar ye redirect page hai (Old Logic: Find 'Download' link)
-            // Aksar V-Cloud ek intermediate page deta hai jahan "Download" click karna padta hai
-            const nextLink = $('a:contains("Download"), a:contains("View"), a.btn').attr("href");
+            // ATTEMPT 2: Follow Redirect Button
+            console.log("⚠️ No direct streams. Looking for 'Download' redirect...");
+            const nextLink = $('a:contains("Download"), a:contains("View"), .btn-primary, .btn-success').attr("href");
 
-            if (nextLink) {
-                console.log("↪️ Found Redirect Link inside V-Cloud:", nextLink);
-                // Us link ko follow karo
-                const { data: finalData } = await axios.get(nextLink, { headers });
-                return extractStreamsFromHtml(finalData);
-            } else {
-                // Agar kuch nahi mila, to shayad ye direct GamerXYT structure hai
-                console.log("ℹ️ No redirects found, parsing current page as final...");
-                return extractStreamsFromHtml(vCloudData);
+            if (nextLink && nextLink.startsWith('http')) {
+                console.log("↪️ Following Redirect Link:", nextLink);
+                try {
+                    const { data: finalData } = await axios.get(nextLink, { headers });
+                    const redirectResult = extractStreamsFromHtml(finalData);
+                    if (redirectResult.streams && redirectResult.streams.length > 0) {
+                        return redirectResult;
+                    }
+                } catch (err) {
+                    console.log("⚠️ Redirect link failed:", err.message);
+                }
             }
+
+            // ATTEMPT 3: FALLBACK TO TOKEN SYSTEM (Brahmastra)
+            // Agar sab fail ho gaya, to isse Token System se treat karo (host=vcloud)
+            console.log("🔥 All direct methods failed. Using Token System for V-Cloud...");
+            return await processWithToken(id, 'vcloud');
         }
 
     } catch (e) {
@@ -107,13 +119,12 @@ async function followRedirectsAndGetHtml(initialUrl) {
     } catch (e) { throw e; }
 }
 
-// Common Extraction Logic (Dono modes ke liye same)
-function extractStreamsFromHtml(html) {
+function extractStreamsFromHtml(html, silent = false) {
     const $ = cheerio.load(html);
     let title = $("title").text().replace("(Movies4u.Foo)", "").trim();
     if (!title) title = "Unknown Title";
 
-    console.log("ℹ️ Page Title:", title);
+    if(!silent) console.log("ℹ️ Parsing HTML for Title:", title);
 
     const streams = [];
 
@@ -151,10 +162,10 @@ function extractStreamsFromHtml(html) {
     );
 
     if (cleanStreams.length === 0) {
-        console.error("❌ NO valid streams found.");
-        return { error: "No links found", title };
+        if(!silent) console.error("❌ NO valid streams found.");
+        return { error: "No links found", title, streams: [] };
     } else {
-        console.log(`✅ Extracted ${cleanStreams.length} valid streams.`);
+        if(!silent) console.log(`✅ Extracted ${cleanStreams.length} valid streams.`);
     }
 
     return { source: "live", title, streams: cleanStreams };
