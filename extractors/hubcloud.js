@@ -6,22 +6,24 @@ const headers = require("../headers");
 const TOKEN_SOURCE = "https://vcloud.zip/hr17ehaeym7rza9";
 const BASE_GAMER_URL = "https://gamerxyt.com/hubcloud.php";
 
-// --- 1. TOKEN EXTRACTOR (Debug Mode) ---
+// --- 1. TOKEN EXTRACTOR ---
 async function getFreshToken() {
     try {
         console.log("🔄 [TOKEN] Generating Fresh Token...");
+        // Random timestamp to avoid caching
         const target = `${TOKEN_SOURCE}?t=${Date.now()}`;
         
         const { data } = await axios.get(target, { 
             headers: { ...headers, "Cache-Control": "no-cache" } 
         });
 
+        // Regex se token nikalna
         const match = data.match(/token=([^&"'\s<>]+)/);
         if (match) {
             console.log("✅ [TOKEN] Extracted:", match[1].substring(0, 10) + "...");
             return match[1];
         } else {
-            console.error("❌ [TOKEN] Regex Failed. Response Preview:", data.substring(0, 200));
+            console.error("❌ [TOKEN] Failed to extract token.");
             return null;
         }
     } catch (e) {
@@ -33,47 +35,38 @@ async function getFreshToken() {
 // --- 2. MAIN EXTRACTOR ---
 module.exports = async function (url) {
     try {
-        console.log("\n🚀 [START] Processing HubCloud URL:", url);
+        console.log("\n🚀 [START] Processing HubCloud URL (Direct Bypass):", url);
         
-        // Step 1: HubCloud Page Load
-        console.log("⏳ [STEP 1] Fetching HubCloud Page...");
-        const { data: hubData } = await axios.get(url, { headers });
-        const $ = cheerio.load(hubData);
-        
+        // Step 1: ID Nikalna (URL se seedha)
+        // HubCloud page load karne ki zaroorat nahi hai (Cloudflare bypass)
         const hubId = url.split('/').pop();
         console.log("ℹ️ [INFO] Extracted HubID:", hubId);
 
-        // Try Direct Method
-        const vCloudLink = $('a:contains("Download"), a:contains("View")').attr("href");
-        console.log("ℹ️ [INFO] Found Direct vCloud Link:", vCloudLink || "NONE");
+        if (!hubId) throw new Error("Invalid HubCloud URL");
 
-        // --- TOKEN SYSTEM ACTIVATION ---
-        console.log("🛡️ [STEP 2] Activating Token Bypass System...");
+        // Step 2: Token Generate Karna
         const token = await getFreshToken();
-        
         if (!token) throw new Error("Token generation failed");
 
-        // Construct GamerXYT Link
+        // Step 3: Magic URL Banana
+        // host=hubcloud & id={HUB_ID} & token={TOKEN}
         const magicUrl = `${BASE_GAMER_URL}?host=hubcloud&id=${hubId}&token=${token}`;
         console.log("🔗 [STEP 3] Generated Magic URL:", magicUrl);
 
-        // Step 4: Scrape the Magic URL
+        // Step 4: Magic URL ko Scrape Karna
+        // GamerXYT usually blocks bots less aggressively than HubCloud
         console.log("⏳ [STEP 4] Scraping Magic URL & Following Redirects...");
         const finalPageHtml = await followRedirectsAndGetHtml(magicUrl);
         
         if (!finalPageHtml) {
-             throw new Error("Final Page HTML was empty or null");
+             throw new Error("Final Page HTML was empty");
         }
 
-        console.log("✅ [STEP 5] Parsing Final HTML for Streams...");
+        console.log("✅ [STEP 5] Parsing Final HTML...");
         return extractStreamsFromHtml(finalPageHtml);
 
     } catch (e) {
         console.error("❌ [CRITICAL ERROR]:", e.message);
-        if (e.response) {
-            console.error("   > Status:", e.response.status);
-            console.error("   > Headers:", JSON.stringify(e.response.headers));
-        }
         return { error: "Failed to extract links", details: e.message };
     }
 };
@@ -95,10 +88,9 @@ async function followRedirectsAndGetHtml(initialUrl) {
             console.log("↪️ [REDIRECT] Found JS Redirect to:", bestMatch);
             const { data: finalData } = await axios.get(bestMatch, { headers });
             return finalData;
-        } else {
-            console.log("ℹ️ [INFO] No JS Redirect found, assuming current page is Final.");
-            return data;
         }
+        
+        return data; // No redirect found, assume this is the page
     } catch (e) {
         console.error("❌ [REDIRECT ERROR]:", e.message);
         throw e;
@@ -114,22 +106,18 @@ function extractStreamsFromHtml(html) {
 
     const streams = [];
 
-    // Debug: Check if buttons exist
-    const successBtns = $(".btn-success").length;
-    const dangerBtns = $(".btn-danger").length;
-    console.log(`ℹ️ [INFO] Buttons Found -> Success: ${successBtns}, Danger: ${dangerBtns}`);
-
+    // 1. Success Buttons (FSL)
     $(".btn-success").each((_, el) => {
         streams.push({ server: "⚡ Fast Cloud (VIP)", link: $(el).attr("href"), type: "DIRECT" });
     });
 
+    // 2. Danger Buttons (G-Direct)
     $(".btn-danger").each((_, el) => {
         streams.push({ server: "🚀 G-Direct (10Gbps)", link: $(el).attr("href"), type: "DRIVE" });
     });
-    
-    // Fallback: Check raw links
+
+    // 3. Fallback: Raw Links
     if (streams.length === 0) {
-        console.log("⚠️ [WARN] No buttons found, searching for Raw Links...");
         const rawMatch = html.match(/href=["'](https?:\/\/(?:drive\.google\.com|hubcloud\.run|workers\.dev|cdn\.fsl)[^"']+)["']/);
         if (rawMatch) {
             console.log("✅ [INFO] Found Raw Link:", rawMatch[1]);
