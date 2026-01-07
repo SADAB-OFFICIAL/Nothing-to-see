@@ -6,6 +6,7 @@ const headers = require("../headers");
 const TOKEN_SOURCE = "https://vcloud.zip/hr17ehaeym7rza9";
 const BASE_GAMER_URL = "https://gamerxyt.com/hubcloud.php";
 
+// --- HELPER: Token Generator (Only for HubCloud) ---
 async function getFreshToken() {
     try {
         console.log("🔄 [TOKEN] Generating Fresh Token...");
@@ -21,36 +22,73 @@ async function getFreshToken() {
     }
 }
 
+// --- MAIN EXTRACTOR ---
 module.exports = async function (url) {
     try {
-        console.log("\n🚀 [START] Processing HubCloud URL (Direct Bypass):", url);
+        console.log("\n🚀 [START] Processing URL:", url);
+
+        // ---------------------------------------------------------
+        // 🛑 LOGIC 1: HUBCLOUD (Use Token System - Bypass CF)
+        // ---------------------------------------------------------
+        if (url.includes("hubcloud") || url.includes("hubdrive")) {
+            console.log("🛡️ Mode: HubCloud Detected (Activating Token Bypass)");
+            
+            // Step 1: ID Nikalna
+            const hubId = url.split('/').pop();
+            if (!hubId) throw new Error("Invalid HubCloud URL");
+
+            // Step 2: Token Generate Karna
+            const token = await getFreshToken();
+            if (!token) throw new Error("Token generation failed");
+
+            // Step 3: Magic URL Banana
+            const magicUrl = `${BASE_GAMER_URL}?host=hubcloud&id=${hubId}&token=${token}`;
+            console.log("🔗 Generated Magic URL:", magicUrl);
+
+            // Step 4: Scrape Magic URL
+            const finalPageHtml = await followRedirectsAndGetHtml(magicUrl);
+            return extractStreamsFromHtml(finalPageHtml);
+        } 
         
-        // Step 1: ID Nikalna
-        const hubId = url.split('/').pop();
-        if (!hubId) throw new Error("Invalid HubCloud URL");
+        // ---------------------------------------------------------
+        // 🟢 LOGIC 2: V-CLOUD (Use Old Direct Scraper - No Token Needed)
+        // ---------------------------------------------------------
+        else {
+            console.log("⚡ Mode: V-Cloud Detected (Direct Scraping)");
+            
+            // Step 1: Direct Page Load
+            const { data: vCloudData } = await axios.get(url, { headers });
+            const $ = cheerio.load(vCloudData);
+            
+            // Check: Agar ye pehle se final page hai (Streams hain)
+            if ($(".btn-success").length > 0 || $(".btn-danger").length > 0) {
+                console.log("✅ Streams found directly on V-Cloud page!");
+                return extractStreamsFromHtml(vCloudData);
+            }
 
-        // Step 2: Token Generate Karna
-        const token = await getFreshToken();
-        if (!token) throw new Error("Token generation failed");
+            // Check: Agar ye redirect page hai (Old Logic: Find 'Download' link)
+            // Aksar V-Cloud ek intermediate page deta hai jahan "Download" click karna padta hai
+            const nextLink = $('a:contains("Download"), a:contains("View"), a.btn').attr("href");
 
-        // Step 3: Magic URL Banana
-        const magicUrl = `${BASE_GAMER_URL}?host=hubcloud&id=${hubId}&token=${token}`;
-        console.log("🔗 [STEP 3] Generated Magic URL:", magicUrl);
-
-        // Step 4: Magic URL ko Scrape Karna
-        console.log("⏳ [STEP 4] Scraping Magic URL & Following Redirects...");
-        const finalPageHtml = await followRedirectsAndGetHtml(magicUrl);
-        
-        if (!finalPageHtml) throw new Error("Final Page HTML was empty");
-
-        console.log("✅ [STEP 5] Parsing Final HTML...");
-        return extractStreamsFromHtml(finalPageHtml);
+            if (nextLink) {
+                console.log("↪️ Found Redirect Link inside V-Cloud:", nextLink);
+                // Us link ko follow karo
+                const { data: finalData } = await axios.get(nextLink, { headers });
+                return extractStreamsFromHtml(finalData);
+            } else {
+                // Agar kuch nahi mila, to shayad ye direct GamerXYT structure hai
+                console.log("ℹ️ No redirects found, parsing current page as final...");
+                return extractStreamsFromHtml(vCloudData);
+            }
+        }
 
     } catch (e) {
         console.error("❌ [CRITICAL ERROR]:", e.message);
         return { error: "Failed to extract links" };
     }
 };
+
+// --- HELPERS ---
 
 async function followRedirectsAndGetHtml(initialUrl) {
     try {
@@ -69,23 +107,23 @@ async function followRedirectsAndGetHtml(initialUrl) {
     } catch (e) { throw e; }
 }
 
+// Common Extraction Logic (Dono modes ke liye same)
 function extractStreamsFromHtml(html) {
     const $ = cheerio.load(html);
     let title = $("title").text().replace("(Movies4u.Foo)", "").trim();
     if (!title) title = "Unknown Title";
 
+    console.log("ℹ️ Page Title:", title);
+
     const streams = [];
 
-    // Helper to process link
     const addStream = (name, link, type) => {
         if (!link || link === '#' || link === 'javascript:void(0)') return;
         
-        // Clean Pixeldrain Links
         if (link.includes("pixeldrain.com") || link.includes("pixeldrain.dev")) {
             link = link.replace("/u/", "/api/file/");
             name = "⚡ Pixeldrain (Fast)";
         }
-
         streams.push({ server: name, link: link, type: type });
     };
 
@@ -99,7 +137,7 @@ function extractStreamsFromHtml(html) {
         addStream(`🚀 G-Direct ${i + 1} (10Gbps)`, $(el).attr("href"), "DRIVE");
     });
 
-    // 3. Fallback: Raw Links
+    // 3. Fallback
     if (streams.length === 0) {
         const rawMatch = html.match(/href=["'](https?:\/\/(?:drive\.google\.com|hubcloud\.run|workers\.dev|cdn\.fsl)[^"']+)["']/);
         if (rawMatch) addStream("Fast Server (Fallback)", rawMatch[1], "DIRECT");
@@ -113,9 +151,10 @@ function extractStreamsFromHtml(html) {
     );
 
     if (cleanStreams.length === 0) {
-        console.error("❌ [ERROR] NO valid streams found.");
+        console.error("❌ NO valid streams found.");
+        return { error: "No links found", title };
     } else {
-        console.log(`✅ [SUCCESS] Extracted ${cleanStreams.length} valid streams.`);
+        console.log(`✅ Extracted ${cleanStreams.length} valid streams.`);
     }
 
     return { source: "live", title, streams: cleanStreams };
