@@ -30,7 +30,7 @@ async function processWithToken(id, host) {
     const token = await getFreshToken();
     if (!token) throw new Error("Token generation failed");
 
-    // Construct Magic URL with Dynamic Host
+    // Construct Magic URL with Correct Host (hubvid / hubcloud)
     const magicUrl = `${BASE_GAMER_URL}?host=${host}&id=${id}&token=${token}`;
     console.log("🔗 Generated Magic URL:", magicUrl);
 
@@ -49,19 +49,20 @@ module.exports = async function (url) {
         if (!id) throw new Error("Invalid ID in URL");
 
         // ---------------------------------------------------------
-        // 🎥 LOGIC 1: VIDEO HOST CHECK (High Priority)
+        // 🎥 LOGIC 1: HUBVID CHECK (Priority #1)
         // ---------------------------------------------------------
         // Example: https://hubcloud.foo/video/vawsz0gkihh1wpw
         if (url.includes("/video/")) {
-            console.log("🎥 Mode: Video Host Detected (Special HubCloud Link)");
-            return await processWithToken(id, 'video');
+            console.log("🎥 Mode: HubVid Detected (host=hubvid)");
+            // Yahan hum 'hubvid' pass kar rahe hain
+            return await processWithToken(id, 'hubvid');
         }
 
         // ---------------------------------------------------------
         // 🔒 LOGIC 2: STANDARD HUBCLOUD
         // ---------------------------------------------------------
         else if (url.includes("hubcloud") || url.includes("hubdrive")) {
-            console.log("🔒 Mode: Standard HubCloud");
+            console.log("🔒 Mode: Standard HubCloud (host=hubcloud)");
             return await processWithToken(id, 'hubcloud');
         } 
         
