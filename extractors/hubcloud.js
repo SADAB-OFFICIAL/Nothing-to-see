@@ -10,6 +10,7 @@ const BASE_GAMER_URL = "https://gamerxyt.com/hubcloud.php";
 async function getFreshToken() {
     try {
         console.log("🔄 [TOKEN] Generating Fresh Token...");
+        // Random timestamp to avoid caching
         const target = `${TOKEN_SOURCE}?t=${Date.now()}`;
         const { data } = await axios.get(target, { 
             headers: { ...headers, "Cache-Control": "no-cache" } 
@@ -22,14 +23,14 @@ async function getFreshToken() {
     }
 }
 
-// --- HELPER: Token System Processor ---
-async function processWithToken(id, host = 'hubcloud') {
+// --- HELPER: Token System Processor (Universal) ---
+async function processWithToken(id, host) {
     console.log(`🛡️ Activating Token Bypass [Host: ${host}]...`);
     
     const token = await getFreshToken();
     if (!token) throw new Error("Token generation failed");
 
-    // Construct Magic URL
+    // Construct Magic URL with Dynamic Host
     const magicUrl = `${BASE_GAMER_URL}?host=${host}&id=${id}&token=${token}`;
     console.log("🔗 Generated Magic URL:", magicUrl);
 
@@ -43,54 +44,58 @@ module.exports = async function (url) {
     try {
         console.log("\n🚀 [START] Processing URL:", url);
 
-        // ID Extraction
+        // ID Extraction (Works for /video/id and /drive/id)
         const id = url.split('/').pop();
+        if (!id) throw new Error("Invalid ID in URL");
 
         // ---------------------------------------------------------
-        // 🛑 LOGIC 1: HUBCLOUD (Directly use Token System)
+        // 🎥 LOGIC 1: VIDEO HOST CHECK (High Priority)
         // ---------------------------------------------------------
-        if (url.includes("hubcloud") || url.includes("hubdrive")) {
-            console.log("🔒 Mode: HubCloud (Cloudflare Detected)");
+        // Example: https://hubcloud.foo/video/vawsz0gkihh1wpw
+        if (url.includes("/video/")) {
+            console.log("🎥 Mode: Video Host Detected (Special HubCloud Link)");
+            return await processWithToken(id, 'video');
+        }
+
+        // ---------------------------------------------------------
+        // 🔒 LOGIC 2: STANDARD HUBCLOUD
+        // ---------------------------------------------------------
+        else if (url.includes("hubcloud") || url.includes("hubdrive")) {
+            console.log("🔒 Mode: Standard HubCloud");
             return await processWithToken(id, 'hubcloud');
         } 
         
         // ---------------------------------------------------------
-        // 🟢 LOGIC 2: V-CLOUD (Hybrid Strategy)
+        // ⚡ LOGIC 3: V-CLOUD (Hybrid Strategy)
         // ---------------------------------------------------------
         else {
-            console.log("⚡ Mode: V-Cloud (Try Direct -> Fallback to Redirect -> Fallback to Token)");
+            console.log("⚡ Mode: V-Cloud (Hybrid)");
             
-            // ATTEMPT 1: Direct Scraping
-            const { data: vCloudData } = await axios.get(url, { headers });
-            const $ = cheerio.load(vCloudData);
-            
-            // Check if we found valid streams directly
-            const directResult = extractStreamsFromHtml(vCloudData, true); // true = silent mode
-            if (directResult.streams && directResult.streams.length > 0) {
-                console.log("✅ Streams found directly on V-Cloud page!");
-                return directResult;
-            }
-
-            // ATTEMPT 2: Follow Redirect Button
-            console.log("⚠️ No direct streams. Looking for 'Download' redirect...");
-            const nextLink = $('a:contains("Download"), a:contains("View"), .btn-primary, .btn-success').attr("href");
-
-            if (nextLink && nextLink.startsWith('http')) {
-                console.log("↪️ Following Redirect Link:", nextLink);
-                try {
-                    const { data: finalData } = await axios.get(nextLink, { headers });
-                    const redirectResult = extractStreamsFromHtml(finalData);
-                    if (redirectResult.streams && redirectResult.streams.length > 0) {
-                        return redirectResult;
-                    }
-                } catch (err) {
-                    console.log("⚠️ Redirect link failed:", err.message);
+            // Step 1: Try Direct Scraping (Fastest)
+            try {
+                const { data: vCloudData } = await axios.get(url, { headers });
+                const directResult = extractStreamsFromHtml(vCloudData, true); // Silent check
+                
+                if (directResult.streams && directResult.streams.length > 0) {
+                    console.log("✅ Streams found directly on V-Cloud page!");
+                    return directResult;
                 }
+
+                // Step 2: Look for Redirect Button (Download/View)
+                const $ = cheerio.load(vCloudData);
+                const nextLink = $('a:contains("Download"), a:contains("View"), .btn-primary, .btn-success').attr("href");
+
+                if (nextLink && nextLink.startsWith('http')) {
+                    console.log("↪️ Following Redirect Link:", nextLink);
+                    const { data: finalData } = await axios.get(nextLink, { headers });
+                    return extractStreamsFromHtml(finalData);
+                }
+            } catch (err) {
+                console.log("⚠️ Direct V-Cloud scrape failed, switching to Token System...");
             }
 
-            // ATTEMPT 3: FALLBACK TO TOKEN SYSTEM (Brahmastra)
-            // Agar sab fail ho gaya, to isse Token System se treat karo (host=vcloud)
-            console.log("🔥 All direct methods failed. Using Token System for V-Cloud...");
+            // Step 3: Fallback to Token System (host=vcloud)
+            console.log("🔥 Direct failed. Using Token System for V-Cloud...");
             return await processWithToken(id, 'vcloud');
         }
 
@@ -100,7 +105,7 @@ module.exports = async function (url) {
     }
 };
 
-// --- HELPERS ---
+// --- HELPERS (Redirects & Parsing) ---
 
 async function followRedirectsAndGetHtml(initialUrl) {
     try {
@@ -157,7 +162,7 @@ function extractStreamsFromHtml(html, silent = false) {
     // Filter Junk
     const cleanStreams = streams.filter(s => 
         !s.link.includes("dgdrive") && 
-        !s.link.includes("login") &&
+        !s.link.includes("login") && 
         !s.link.includes("plough")
     );
 
